@@ -1,0 +1,5 @@
+Dump recebido: texto.txt
+Resultado: o dump lista o módulo Calculate e não contém endpoints HTTP, URLSession/NSURLSession, classes de licença/bypass ou a implementação da key local do Satanabe External.
+A única classe com “Keys” é CalculateKeys, pertencente ao módulo Calculate e com apenas a propriedade options; ela não fornece evidência de ser o sistema de licença do External.
+
+A v5.4 portanto adiciona um Backend Router genérico em NSURLSession, sem inventar nomes de classes do app.

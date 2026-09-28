@@ -1,13 +1,23 @@
-# SatanabeCleanUI v5.3 — 3105 Project Exporter
+# SatanabeCleanUI v5.4 — API Switcher
 
-Exportador compatível com dois fluxos locais:
+Base: v5.3 patch/project exporter.
 
-- arquivos `.3105` reais;
-- arquivos de cache que perderam a extensão, detectados pela assinatura `3105PATCH`;
-- projetos já importados pelo 3105, detectados por `.3105-project.plist`.
+## Novo: Conexão / API
+- Perfis API A, API B e Custom.
+- API A vem preenchida com `https://api-production-182c.up.railway.app`.
+- API B e Custom ficam editáveis no flutuante.
+- Liga/desliga o roteamento sem recompilar.
+- Host original opcional para limitar quais requisições podem ser redirecionadas.
+- Filtro de rotas por prefixo, separado por vírgula.
+- Opção `Preservar rota da IPA`: troca somente scheme/host/porta e mantém path/query da requisição original.
+- Botão `Testar API ativa`.
+- Intercepta data/download/upload tasks do NSURLSession com request/URL.
 
-No flutuante, use **Exportar patches instalados**. É possível marcar um ou vários itens.
+## Nome genérico
+A área foi chamada de **Conexão / API** e o componente interno de **Backend Router**, evitando nomes específicos de bypass.
 
-Para um pacote 3105 real, os bytes são compartilhados sem alteração. Para um `PatchProject` já decodificado, a dylib preserva a pasta inteira do projeto em ZIP e acrescenta `PATCH_PATH.txt` com caminhos/metadados encontrados no manifesto.
+## Importante sobre o dump enviado
+O `texto.txt` enviado contém interfaces do framework `Calculate` (calculadora/conversão) e não expõe as classes do sistema local de key, endpoints HTTP ou URLSession do External. Por isso esta versão NÃO inventa hooks de classes que não aparecem no dump. O roteador funciona de forma genérica em NSURLSession e pode apontar as rotas compatíveis para API A/B/Custom.
 
-Isso evita depender de Supabase/Railway: a detecção é feita no armazenamento local do app.
+## Segurança contra redirecionamento acidental
+Deixe `Host original` preenchido quando souber o domínio original. Assim só requisições daquele host e das rotas permitidas são trocadas.
