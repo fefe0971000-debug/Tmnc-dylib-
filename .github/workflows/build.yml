@@ -1,56 +1,69 @@
-name: Build SatanabeCleanUI v5.4
+name: Build SatanabeCleanUI dylib
 
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [main]
     paths:
       - 'Source/**'
       - 'Makefile'
       - '.github/workflows/build.yml'
 
+concurrency:
+  group: satanabe-cleanui-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: macos-15
-    timeout-minutes: 15
+    runs-on: macos-14
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate files
+      - name: Show repository layout
         run: |
-          set -euxo pipefail
-          test -f Source/SatanabeCleanUI.mm
-          test -f Makefile
-          find . -maxdepth 3 -type f | sort
+          pwd
+          find . -maxdepth 3 -type f -print | sort
 
-      - name: Toolchain
+      - name: Show toolchain
         run: |
-          set -euxo pipefail
+          sw_vers
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphoneos --show-sdk-path
+          clang --version
+          make --version
 
       - name: Build and diagnose
+        shell: bash
         run: |
           set -euxo pipefail
-          make clean
+          make clean || true
+          rm -rf build
           make inspect
+          echo "=== build output ==="
+          find build -maxdepth 2 -type f -print || true
+          test -f build/SatanabeCleanUI.dylib
+          file build/SatanabeCleanUI.dylib
+          otool -L build/SatanabeCleanUI.dylib || true
 
       - name: Package
+        shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p dist
-          cp build/SatanabeCleanUI.dylib dist/
-          shasum -a 256 build/SatanabeCleanUI.dylib > dist/SHA256.txt
-          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.4.zip
+          mkdir -p artifact
+          cp build/SatanabeCleanUI.dylib artifact/SatanabeCleanUI.dylib
+          shasum -a 256 artifact/SatanabeCleanUI.dylib > artifact/SHA256.txt
+          ditto -c -k --sequesterRsrc --keepParent artifact SatanabeCleanUI-build.zip
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
         with:
-          name: SatanabeCleanUI-v5.4
+          name: SatanabeCleanUI-dylib
           path: |
-            build/SatanabeCleanUI.dylib
-            SatanabeCleanUI-v5.4.zip
+            artifact/SatanabeCleanUI.dylib
+            artifact/SHA256.txt
+            SatanabeCleanUI-build.zip
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
