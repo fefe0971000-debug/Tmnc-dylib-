@@ -1,17 +1,13 @@
-name: Build SatanabeCleanUI dylib
+name: Build SatanabeCleanUI v5.5
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main, master ]
     paths:
       - 'Source/**'
       - 'Makefile'
       - '.github/workflows/build.yml'
-
-concurrency:
-  group: satanabe-cleanui-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -22,48 +18,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show repository layout
+      - name: Validate files
         run: |
-          pwd
-          find . -maxdepth 3 -type f -print | sort
+          set -euxo pipefail
+          test -f Source/SatanabeCleanUI.mm
+          test -f Makefile
+          find . -maxdepth 3 -type f | sort
 
-      - name: Show toolchain
+      - name: Toolchain
         run: |
-          sw_vers
+          set -euxo pipefail
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-path
-          clang --version
-          make --version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - name: Build and diagnose
-        shell: bash
         run: |
           set -euxo pipefail
-          make clean || true
-          rm -rf build
+          make clean
           make inspect
-          echo "=== build output ==="
-          find build -maxdepth 2 -type f -print || true
-          test -f build/SatanabeCleanUI.dylib
-          file build/SatanabeCleanUI.dylib
-          otool -L build/SatanabeCleanUI.dylib || true
 
       - name: Package
-        shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p artifact
-          cp build/SatanabeCleanUI.dylib artifact/SatanabeCleanUI.dylib
-          shasum -a 256 artifact/SatanabeCleanUI.dylib > artifact/SHA256.txt
-          ditto -c -k --sequesterRsrc --keepParent artifact SatanabeCleanUI-build.zip
+          mkdir -p dist
+          cp build/SatanabeCleanUI.dylib dist/
+          shasum -a 256 build/SatanabeCleanUI.dylib > dist/SHA256.txt
+          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.5.zip
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
         with:
-          name: SatanabeCleanUI-dylib
+          name: SatanabeCleanUI-v5.5
           path: |
-            artifact/SatanabeCleanUI.dylib
-            artifact/SHA256.txt
-            SatanabeCleanUI-build.zip
+            build/SatanabeCleanUI.dylib
+            SatanabeCleanUI-v5.5.zip
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
