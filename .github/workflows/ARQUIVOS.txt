@@ -1,8 +1,0 @@
-SatanabeCleanUI v4.1 — pacote completo
-
-Estrutura:
-.github/workflows/build.yml
-Makefile
-README.md
-Source/SatanabeCleanUI.mm
-build.yml
