@@ -1794,20 +1794,17 @@ static void SCUIInstallBackendRouter(void) {
                                             message:[lines componentsJoinedByString:@"\n"]
                                      preferredStyle:UIAlertControllerStyleAlert];
 
-    __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"Compartilhar este log"
                                              style:UIAlertActionStyleDefault
                                            handler:^(__unused UIAlertAction *action) {
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        [strongSelf shareLogDictionary:log];
+        [self shareLogDictionary:log];
     }]];
 
     if (index > 0) {
         [alert addAction:[UIAlertAction actionWithTitle:@"Anterior"
                                                  style:UIAlertActionStyleDefault
                                                handler:^(__unused UIAlertAction *action) {
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            [strongSelf showAPILogAtIndex:index - 1 logs:logs];
+            [self showAPILogAtIndex:index - 1 logs:logs];
         }]];
     }
 
@@ -1815,8 +1812,7 @@ static void SCUIInstallBackendRouter(void) {
         [alert addAction:[UIAlertAction actionWithTitle:@"Próximo"
                                                  style:UIAlertActionStyleDefault
                                                handler:^(__unused UIAlertAction *action) {
-            __strong typeof(weakSelf) strongSelf = weakSelf;
-            [strongSelf showAPILogAtIndex:index + 1 logs:logs];
+            [self showAPILogAtIndex:index + 1 logs:logs];
         }]];
     }
 
@@ -2060,7 +2056,7 @@ __attribute__((constructor))
 static void SCUIStart(void) {
     SCUIInstallAlertShareHook();
     SCUIInstallAPILogger();
-    // v5.8 diagnostic build: no API rewrite and no local validation override.
+    // v5.8.2 diagnostic build: no API rewrite and no local validation override.
 
     dispatch_async(dispatch_get_main_queue(), ^{
         SCUIManager *m = SCUIManager.shared;
