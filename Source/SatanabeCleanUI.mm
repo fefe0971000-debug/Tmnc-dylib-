@@ -1264,12 +1264,6 @@ static void SCUIInstallBackendRouter(void) {
     SCUISave(SCUIManager.shared.prefs);
 }
 
-- (UIViewController *)scuiTopController {
-    UIViewController *vc = self.window.rootViewController;
-    while (vc.presentedViewController) vc = vc.presentedViewController;
-    return vc;
-}
-
 - (void)showAPIEditor {
     SCUIManager *m = SCUIManager.shared;
     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Conexão / API"
