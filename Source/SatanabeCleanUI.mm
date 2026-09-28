@@ -5,7 +5,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 
-static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5.3";
+static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5.4";
 static const void *SCUIOriginalHiddenKey = &SCUIOriginalHiddenKey;
 static const void *SCUIGlassOverlayKey = &SCUIGlassOverlayKey;
 static const void *SCUIOriginalBorderWidthKey = &SCUIOriginalBorderWidthKey;
@@ -28,7 +28,15 @@ static NSMutableDictionary *SCUIPrefs(void) {
         @"cardRadius": @20.0,
         @"borderWidth": @0.55,
         @"haptics": @YES,
-        @"performanceMode": @NO
+        @"performanceMode": @NO,
+        @"apiRoutingEnabled": @NO,
+        @"apiProfile": @0,
+        @"apiAURL": @"https://api-production-182c.up.railway.app",
+        @"apiBURL": @"",
+        @"apiCustomURL": @"",
+        @"apiSourceHost": @"",
+        @"apiPathFilter": @"/api/patches,/api/patches/external,/functions/v1/Validate-licenses,/functions/v1/validate-license",
+        @"apiPreservePath": @YES
     } mutableCopy];
     if (saved) [p addEntriesFromDictionary:saved];
     return p;
@@ -183,6 +191,106 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     }
 }
 
+
+#pragma mark - Backend Router
+
+static NSString *SCUITrim(NSString *value) {
+    if (![value isKindOfClass:NSString.class]) return @"";
+    return [value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+}
+
+static NSString *SCUIActiveAPIBaseURL(void) {
+    NSDictionary *p = SCUIPrefs();
+    NSInteger profile = [p[@"apiProfile"] integerValue];
+    NSString *value = profile == 0 ? p[@"apiAURL"] : (profile == 1 ? p[@"apiBURL"] : p[@"apiCustomURL"]);
+    return SCUITrim(value);
+}
+
+static BOOL SCUIPathMatchesFilter(NSString *path, NSString *filterText) {
+    NSString *filter = SCUITrim(filterText);
+    if (filter.length == 0) return YES;
+    for (NSString *raw in [filter componentsSeparatedByString:@","]) {
+        NSString *prefix = SCUITrim(raw);
+        if (prefix.length && [path hasPrefix:prefix]) return YES;
+    }
+    return NO;
+}
+
+static NSURL *SCUIRewriteURL(NSURL *original) {
+    if (!original) return original;
+    NSDictionary *p = SCUIPrefs();
+    if (![p[@"apiRoutingEnabled"] boolValue]) return original;
+
+    NSString *baseText = SCUIActiveAPIBaseURL();
+    NSURLComponents *base = [NSURLComponents componentsWithString:baseText];
+    if (!base || base.scheme.length == 0 || base.host.length == 0) return original;
+
+    NSURLComponents *source = [NSURLComponents componentsWithURL:original resolvingAgainstBaseURL:NO];
+    if (!source || source.host.length == 0) return original;
+
+    NSString *sourceHost = SCUITrim(p[@"apiSourceHost"]);
+    if (sourceHost.length && [source.host caseInsensitiveCompare:sourceHost] != NSOrderedSame) return original;
+    if (!SCUIPathMatchesFilter(source.path ?: @"/", p[@"apiPathFilter"])) return original;
+
+    BOOL preservePath = [p[@"apiPreservePath"] boolValue];
+    if (!preservePath) return base.URL ?: original;
+
+    source.scheme = base.scheme;
+    source.host = base.host;
+    source.port = base.port;
+    // Preserve the app's path/query. This makes the same IPA usable against APIs
+    // that expose compatible routes on different hosts.
+    return source.URL ?: original;
+}
+
+static NSURLRequest *SCUIRewriteRequest(NSURLRequest *request) {
+    if (!request.URL) return request;
+    NSURL *rewritten = SCUIRewriteURL(request.URL);
+    if (!rewritten || [rewritten isEqual:request.URL]) return request;
+    NSMutableURLRequest *copy = [request mutableCopy];
+    copy.URL = rewritten;
+    return copy;
+}
+
+@interface NSURLSession (SCUIBackendRouter)
+- (NSURLSessionDataTask *)scui_dataTaskWithURL:(NSURL *)url completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
+- (NSURLSessionDataTask *)scui_dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
+- (NSURLSessionDownloadTask *)scui_downloadTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURL *, NSURLResponse *, NSError *))completionHandler;
+- (NSURLSessionUploadTask *)scui_uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler;
+@end
+
+@implementation NSURLSession (SCUIBackendRouter)
+- (NSURLSessionDataTask *)scui_dataTaskWithURL:(NSURL *)url completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    return [self scui_dataTaskWithURL:SCUIRewriteURL(url) completionHandler:completionHandler];
+}
+- (NSURLSessionDataTask *)scui_dataTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    return [self scui_dataTaskWithRequest:SCUIRewriteRequest(request) completionHandler:completionHandler];
+}
+- (NSURLSessionDownloadTask *)scui_downloadTaskWithRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURL *, NSURLResponse *, NSError *))completionHandler {
+    return [self scui_downloadTaskWithRequest:SCUIRewriteRequest(request) completionHandler:completionHandler];
+}
+- (NSURLSessionUploadTask *)scui_uploadTaskWithRequest:(NSURLRequest *)request fromData:(NSData *)bodyData completionHandler:(void (^)(NSData *, NSURLResponse *, NSError *))completionHandler {
+    return [self scui_uploadTaskWithRequest:SCUIRewriteRequest(request) fromData:bodyData completionHandler:completionHandler];
+}
+@end
+
+static void SCUISwizzle(Class cls, SEL original, SEL replacement) {
+    Method a = class_getInstanceMethod(cls, original);
+    Method b = class_getInstanceMethod(cls, replacement);
+    if (a && b) method_exchangeImplementations(a, b);
+}
+
+static void SCUIInstallBackendRouter(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Class cls = NSURLSession.class;
+        SCUISwizzle(cls, @selector(dataTaskWithURL:completionHandler:), @selector(scui_dataTaskWithURL:completionHandler:));
+        SCUISwizzle(cls, @selector(dataTaskWithRequest:completionHandler:), @selector(scui_dataTaskWithRequest:completionHandler:));
+        SCUISwizzle(cls, @selector(downloadTaskWithRequest:completionHandler:), @selector(scui_downloadTaskWithRequest:completionHandler:));
+        SCUISwizzle(cls, @selector(uploadTaskWithRequest:fromData:completionHandler:), @selector(scui_uploadTaskWithRequest:fromData:completionHandler:));
+    });
+}
+
 @class SCUIOverlay;
 
 @interface SCUIManager : NSObject
@@ -212,11 +320,16 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 @property(nonatomic, strong) UISlider *bubbleSizeSlider;
 @property(nonatomic, strong) UISlider *bubbleOpacitySlider;
 @property(nonatomic, strong) UISwitch *hapticsSwitch;
+@property(nonatomic, strong) UISwitch *apiRoutingSwitch;
+@property(nonatomic, strong) UISegmentedControl *apiProfileControl;
+@property(nonatomic, strong) UISwitch *apiPreservePathSwitch;
 @property(nonatomic) NSInteger colorTarget;
 @property(nonatomic) NSInteger documentPickerPurpose; // 0=video, 1=export patch/payload
 @property(nonatomic, strong) NSURL *pendingExportSourceURL;
 - (void)refreshControls;
 - (void)showInstalledPatchExporter;
+- (void)showAPIEditor;
+- (void)testActiveAPI;
 @end
 
 @implementation SCUIManager
@@ -540,7 +653,7 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 
     UILabel *title = [self label:@"SATANABE • VISUAL" size:20];
     title.font = [UIFont boldSystemFontOfSize:20];
-    UILabel *sub = [self label:@"Visual + ferramentas locais. Não altera keys nem Supabase." size:11];
+    UILabel *sub = [self label:@"Visual + patches + conexão de teste." size:11];
     sub.textColor = [UIColor colorWithWhite:1 alpha:0.58];
 
     self.glassSwitch = [UISwitch new];
@@ -584,6 +697,23 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     [self.stack addArrangedSubview:[self button:@"Exportar patches instalados" action:@selector(showInstalledPatchExporter)]];
     [self.stack addArrangedSubview:[self button:@"Exportar arquivo manualmente" action:@selector(choosePatchForExport)]];
 
+
+    [self label:@"Conexão / API" size:13];
+    self.apiRoutingSwitch = [UISwitch new];
+    [self.apiRoutingSwitch addTarget:self action:@selector(apiRoutingChanged:) forControlEvents:UIControlEventValueChanged];
+    [self rowWithTitle:@"Usar API selecionada" control:self.apiRoutingSwitch];
+
+    self.apiProfileControl = [[UISegmentedControl alloc] initWithItems:@[@"API A", @"API B", @"Custom"]];
+    [self.apiProfileControl addTarget:self action:@selector(apiProfileChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.stack addArrangedSubview:self.apiProfileControl];
+
+    self.apiPreservePathSwitch = [UISwitch new];
+    [self.apiPreservePathSwitch addTarget:self action:@selector(apiPreservePathChanged:) forControlEvents:UIControlEventValueChanged];
+    [self rowWithTitle:@"Preservar rota da IPA" control:self.apiPreservePathSwitch];
+
+    [self.stack addArrangedSubview:[self button:@"Editar URLs / filtros" action:@selector(showAPIEditor)]];
+    [self.stack addArrangedSubview:[self button:@"Testar API ativa" action:@selector(testActiveAPI)]];
+
     [self label:@"Tamanho do botão flutuante" size:13];
     self.bubbleSizeSlider = [UISlider new];
     self.bubbleSizeSlider.minimumValue = 42; self.bubbleSizeSlider.maximumValue = 82;
@@ -620,6 +750,9 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     self.bubbleSizeSlider.value = [m.prefs[@"bubbleSize"] floatValue];
     self.bubbleOpacitySlider.value = [m.prefs[@"bubbleOpacity"] floatValue];
     self.hapticsSwitch.on = [m.prefs[@"haptics"] boolValue];
+    self.apiRoutingSwitch.on = [m.prefs[@"apiRoutingEnabled"] boolValue];
+    self.apiProfileControl.selectedSegmentIndex = [m.prefs[@"apiProfile"] integerValue];
+    self.apiPreservePathSwitch.on = [m.prefs[@"apiPreservePath"] boolValue];
 
     UIColor *accent = SCUIColorFromArray(m.prefs[@"accentColor"], UIColor.whiteColor);
     self.bubble.layer.borderColor = [accent colorWithAlphaComponent:self.panel && !self.panel.hidden ? 1.0 : 0.72].CGColor;
@@ -1115,6 +1248,90 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     (void)controller;
 }
 
+
+- (void)apiRoutingChanged:(UISwitch *)sender {
+    SCUIManager.shared.prefs[@"apiRoutingEnabled"] = @(sender.on);
+    SCUISave(SCUIManager.shared.prefs);
+}
+
+- (void)apiProfileChanged:(UISegmentedControl *)sender {
+    SCUIManager.shared.prefs[@"apiProfile"] = @(sender.selectedSegmentIndex);
+    SCUISave(SCUIManager.shared.prefs);
+}
+
+- (void)apiPreservePathChanged:(UISwitch *)sender {
+    SCUIManager.shared.prefs[@"apiPreservePath"] = @(sender.on);
+    SCUISave(SCUIManager.shared.prefs);
+}
+
+- (UIViewController *)scuiTopController {
+    UIViewController *vc = self.window.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    return vc;
+}
+
+- (void)showAPIEditor {
+    SCUIManager *m = SCUIManager.shared;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Conexão / API"
+        message:@"API A/B/Custom são perfis locais. Host original vazio = filtrar apenas pelas rotas abaixo."
+        preferredStyle:UIAlertControllerStyleAlert];
+
+    NSArray *keys = @[@"apiAURL", @"apiBURL", @"apiCustomURL", @"apiSourceHost", @"apiPathFilter"];
+    NSArray *placeholders = @[@"API A — https://servidor.com", @"API B — https://servidor.com", @"Custom — https://servidor.com", @"Host original (opcional)", @"Rotas separadas por vírgula"];
+    for (NSInteger i=0; i<keys.count; i++) {
+        [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+            f.placeholder = placeholders[i];
+            f.text = [m.prefs[keys[i]] isKindOfClass:NSString.class] ? m.prefs[keys[i]] : @"";
+            f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            f.autocorrectionType = UITextAutocorrectionTypeNo;
+            f.keyboardType = (i < 3) ? UIKeyboardTypeURL : UIKeyboardTypeDefault;
+        }];
+    }
+
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        for (NSInteger i=0; i<keys.count; i++) {
+            m.prefs[keys[i]] = SCUITrim(a.textFields[i].text ?: @"");
+        }
+        SCUISave(m.prefs);
+        [self refreshControls];
+    }]];
+    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+
+- (void)testActiveAPI {
+    NSString *baseText = SCUIActiveAPIBaseURL();
+    NSURL *url = [NSURL URLWithString:baseText];
+    if (!url || url.scheme.length == 0 || url.host.length == 0) {
+        UIAlertController *bad = [UIAlertController alertControllerWithTitle:@"API inválida" message:@"Configure uma URL completa começando com http:// ou https://." preferredStyle:UIAlertControllerStyleAlert];
+        [bad addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [[self scuiTopController] presentViewController:bad animated:YES completion:nil];
+        return;
+    }
+
+    // Use a temporary session with routing disabled for this direct connectivity test.
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    cfg.timeoutIntervalForRequest = 8.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"GET";
+    [req setValue:@"Satanabe-Backend-Lab/1.0" forHTTPHeaderField:@"User-Agent"];
+
+    [[session dataTaskWithRequest:req completionHandler:^(__unused NSData *data, NSURLResponse *response, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *message = nil;
+            if (error) message = [NSString stringWithFormat:@"Falha: %@", error.localizedDescription ?: @"erro desconhecido"];
+            else if ([response isKindOfClass:NSHTTPURLResponse.class]) {
+                NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
+                message = [NSString stringWithFormat:@"Servidor respondeu HTTP %ld. Mesmo 401/404 confirma que o host respondeu.", (long)status];
+            } else message = @"Servidor respondeu.";
+            UIAlertController *ok = [UIAlertController alertControllerWithTitle:@"Teste da API" message:message preferredStyle:UIAlertControllerStyleAlert];
+            [ok addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [[self scuiTopController] presentViewController:ok animated:YES completion:nil];
+        });
+    }] resume];
+}
+
 - (void)resetVisual {
     SCUIManager *m = SCUIManager.shared;
     m.prefs[@"glass"] = @NO;
@@ -1126,6 +1343,9 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     m.prefs[@"bubbleSize"] = @56.0;
     m.prefs[@"bubbleOpacity"] = @0.90;
     m.prefs[@"haptics"] = @YES;
+    m.prefs[@"apiRoutingEnabled"] = @NO;
+    m.prefs[@"apiProfile"] = @0;
+    m.prefs[@"apiPreservePath"] = @YES;
     SCUISave(m.prefs);
     for (UIWindow *w in SCUIWindows()) {
         SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
@@ -1139,6 +1359,7 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 __attribute__((constructor))
 static void SCUIStart(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        SCUIInstallBackendRouter();
         SCUIManager *m = SCUIManager.shared;
         [m install];
 
