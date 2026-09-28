@@ -1,9 +1,12 @@
-# SatanabeCleanUI v5.8.1 — API Logger build fix
+# SatanabeCleanUI v5.8.2 — API Logger
 
-Correções desta revisão:
-- `__attribute__((constructor))` voltou a ficar imediatamente antes de `SCUIStart`.
-- Removido o bloco recursivo `showOne`, eliminando a retenção/captura problemática mostrada no build.
-- Navegação de logs agora usa método Objective-C normal: Anterior / Próximo / Compartilhar este log.
-- Scanner de URLs foi simplificado para evitar callback recursivo/desnecessário.
-- Mantém o comportamento de diagnóstico: logger, correlação key/URL/VALID/INVALID e compartilhamento.
-- Não ativa troca de backend nem validação local.
+Correção específica do erro de compilação mostrado no GitHub Actions:
+
+- removidos `__weak typeof(self)` e `__strong typeof(weakSelf)` do navegador de logs;
+- os handlers agora chamam `self` diretamente;
+- mantido o `constructor` imediatamente antes de `SCUIStart`;
+- mantidos URL logger, correlação key + URL + VALID/INVALID;
+- mantido Compartilhar este log, Compartilhar todos e compartilhamento em pop-ups;
+- build continua somente diagnóstico, sem reescrever a API.
+
+Estrutura pronta para GitHub Actions.
