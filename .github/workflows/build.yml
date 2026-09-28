@@ -15,6 +15,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Listar arquivos do repo
+        run: |
+          echo "---- raiz ----"
+          ls -la
+          echo "---- Source ----"
+          ls -la Source/ 2>/dev/null || echo "sem pasta Source"
+
       - name: Show iOS SDK
         run: |
           xcodebuild -showsdks
@@ -43,16 +50,24 @@ jobs:
             -framework CoreGraphics \
             -framework UniformTypeIdentifiers \
             -o SatanabeCleanUI.dylib \
-            SatanabeCleanUI.mm
+            Source/SatanabeCleanUI.mm
 
           echo "---- file ----"
           file SatanabeCleanUI.dylib
           echo "---- lipo ----"
           lipo -info SatanabeCleanUI.dylib
 
+      - name: Package artifact
+        run: |
+          mkdir -p out
+          cp SatanabeCleanUI.dylib out/
+          cp SatanabeCleanUI.plist out/ 2>/dev/null || true
+          cp SatanabeCleanUI.entitlements out/ 2>/dev/null || true
+          ls -la out/
+
       - name: Upload dylib
         uses: actions/upload-artifact@v4
         with:
           name: SatanabeCleanUI-dylib
-          path: SatanabeCleanUI.dylib
+          path: out/
           if-no-files-found: error
