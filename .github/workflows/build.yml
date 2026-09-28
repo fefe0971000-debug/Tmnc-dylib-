@@ -1,50 +1,58 @@
-name: Build SatanabeCleanUI v5.8.2 API Logger Build Fix
+name: Build SatanabeCleanUI
+
 on:
-  workflow_dispatch:
   push:
     branches: [ main, master ]
-    paths:
-      - 'Source/**'
-      - 'Makefile'
-      - '.github/workflows/build.yml'
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 30
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Validate
+      - name: Show iOS SDK
         run: |
-          set -euxo pipefail
-          test -f Source/SatanabeCleanUI.mm
-          test -f Makefile
+          xcodebuild -showsdks
+          xcrun --sdk iphoneos --show-sdk-path
 
-      - name: Toolchain
+      - name: Compile dylib (arm64 + arm64e)
         run: |
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "Using SDK: $SDK"
 
-      - name: Build
-        run: |
-          set -euxo pipefail
-          make clean
-          make inspect
+          xcrun --sdk iphoneos clang++ \
+            -arch arm64 \
+            -arch arm64e \
+            -isysroot "$SDK" \
+            -miphoneos-version-min=14.0 \
+            -fobjc-arc \
+            -fmodules \
+            -O2 \
+            -dynamiclib \
+            -install_name @rpath/SatanabeCleanUI.dylib \
+            -framework UIKit \
+            -framework Foundation \
+            -framework AVFoundation \
+            -framework QuartzCore \
+            -framework CoreGraphics \
+            -framework UniformTypeIdentifiers \
+            -o SatanabeCleanUI.dylib \
+            SatanabeCleanUI.mm
 
-      - name: Package
-        run: |
-          set -euxo pipefail
-          mkdir -p dist
-          cp build/SatanabeCleanUI.dylib dist/
-          shasum -a 256 build/SatanabeCleanUI.dylib > dist/SHA256.txt
-          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.8.2.zip
+          echo "---- file ----"
+          file SatanabeCleanUI.dylib
+          echo "---- lipo ----"
+          lipo -info SatanabeCleanUI.dylib
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
         with:
-          name: SatanabeCleanUI-v5.8.2
-          path: |
-            build/SatanabeCleanUI.dylib
-            SatanabeCleanUI-v5.8.2.zip
+          name: SatanabeCleanUI-dylib
+          path: SatanabeCleanUI.dylib
           if-no-files-found: error
-          retention-days: 30
