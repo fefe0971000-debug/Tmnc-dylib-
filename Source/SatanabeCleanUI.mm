@@ -726,8 +726,42 @@ static void SCUIInstallBackendRouter(void) {
     });
 }
 
-@class SCUIOverlay;
 @class SCUIPatchDLItem;
+
+@interface SCUIPatchCandidate : NSObject
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic, copy) NSString *subtitle;
+@property(nonatomic, strong) NSURL *url;
+@property(nonatomic) NSInteger kind;
+@end
+@implementation SCUIPatchCandidate @end
+
+@interface SCUIOverlay : UIView <UIDocumentPickerDelegate, UIColorPickerViewControllerDelegate>
+@property(nonatomic, strong) UIButton *bubble;
+@property(nonatomic, strong) UIVisualEffectView *panel;
+@property(nonatomic, strong) UIStackView *stack;
+@property(nonatomic, strong) UISlider *bubbleSizeSlider;
+@property(nonatomic, strong) UISlider *bubbleOpacitySlider;
+@property(nonatomic, strong) UISwitch *hapticsSwitch;
+@property(nonatomic, strong) UISwitch *localLicenseBypassSwitch;
+- (void)refreshControls;
+- (void)showInstalledPatchExporter;
+- (void)showAPILogs;
+- (void)clearAPILogs;
+- (void)shareAllAPILogs;
+- (void)localLicenseBypassChanged:(UISwitch *)sender;
+- (void)scui_patch_openDownloader;
+- (UIViewController *)scuiTopController;
+- (NSString *)scuiSanitizedRelativePath:(NSString *)input;
+- (NSString *)scuiDisplayLocationForURL:(NSURL *)url;
+- (BOOL)scuiFileHas3105Magic:(NSURL *)url;
+- (NSString *)scuiFirstStringForKeys:(NSArray<NSString *> *)keys inObject:(id)obj;
+- (void)scuiCollectPathHintsFromObject:(id)obj prefix:(NSString *)prefix output:(NSMutableArray<NSString *> *)out;
+- (NSArray<SCUIPatchCandidate *> *)scuiDiscoverPatchCandidates;
+- (NSURL *)scuiPrepareCandidateForSharing:(SCUIPatchCandidate *)item error:(NSError **)error;
+- (void)shareItems:(NSArray *)items fromView:(UIView *)view;
+- (void)shareLogDictionary:(NSDictionary *)log;
+@end
 
 @interface SCUIManager : NSObject
 @property(nonatomic, strong) NSMutableDictionary *prefs;
@@ -743,13 +777,6 @@ static void SCUIInstallBackendRouter(void) {
 - (NSURL *)customVideoURL;
 @end
 
-@interface SCUIPatchCandidate : NSObject
-@property(nonatomic, copy) NSString *title;
-@property(nonatomic, copy) NSString *subtitle;
-@property(nonatomic, strong) NSURL *url;
-@property(nonatomic) NSInteger kind;
-@end
-@implementation SCUIPatchCandidate @end
 
 @interface SCUIPatchExportController : UIViewController <UITableViewDataSource, UITableViewDelegate>
 @property(nonatomic, strong) NSArray<SCUIPatchCandidate *> *items;
@@ -958,32 +985,6 @@ static void SCUIInstallBackendRouter(void) {
 
 #pragma mark - SCUIOverlay
 
-@interface SCUIOverlay : UIView <UIDocumentPickerDelegate, UIColorPickerViewControllerDelegate>
-@property(nonatomic, strong) UIButton *bubble;
-@property(nonatomic, strong) UIVisualEffectView *panel;
-@property(nonatomic, strong) UIStackView *stack;
-@property(nonatomic, strong) UISlider *bubbleSizeSlider;
-@property(nonatomic, strong) UISlider *bubbleOpacitySlider;
-@property(nonatomic, strong) UISwitch *hapticsSwitch;
-@property(nonatomic, strong) UISwitch *localLicenseBypassSwitch;
-- (void)refreshControls;
-- (void)showInstalledPatchExporter;
-- (void)showAPILogs;
-- (void)clearAPILogs;
-- (void)shareAllAPILogs;
-- (void)localLicenseBypassChanged:(UISwitch *)sender;
-- (void)scui_patch_openDownloader;
-- (UIViewController *)scuiTopController;
-- (NSString *)scuiSanitizedRelativePath:(NSString *)input;
-- (NSString *)scuiDisplayLocationForURL:(NSURL *)url;
-- (BOOL)scuiFileHas3105Magic:(NSURL *)url;
-- (NSString *)scuiFirstStringForKeys:(NSArray<NSString *> *)keys inObject:(id)obj;
-- (void)scuiCollectPathHintsFromObject:(id)obj prefix:(NSString *)prefix output:(NSMutableArray<NSString *> *)out;
-- (NSArray<SCUIPatchCandidate *> *)scuiDiscoverPatchCandidates;
-- (NSURL *)scuiPrepareCandidateForSharing:(SCUIPatchCandidate *)item error:(NSError **)error;
-- (void)shareItems:(NSArray *)items fromView:(UIView *)view;
-- (void)shareLogDictionary:(NSDictionary *)log;
-@end
 
 @implementation SCUIOverlay
 
