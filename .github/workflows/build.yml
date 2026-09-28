@@ -1,4 +1,4 @@
-name: Build SatanabeCleanUI v5
+name: Build SatanabeCleanUI v5.1
 
 on:
   workflow_dispatch:
@@ -43,14 +43,14 @@ jobs:
           mkdir -p dist
           cp build/SatanabeCleanUI.dylib dist/
           shasum -a 256 build/SatanabeCleanUI.dylib > dist/SHA256.txt
-          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.zip
+          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.1.zip
 
       - name: Upload dylib
         uses: actions/upload-artifact@v4
         with:
-          name: SatanabeCleanUI-v5
+          name: SatanabeCleanUI-v5.1
           path: |
             build/SatanabeCleanUI.dylib
-            SatanabeCleanUI-v5.zip
+            SatanabeCleanUI-v5.1.zip
           if-no-files-found: error
           retention-days: 30
