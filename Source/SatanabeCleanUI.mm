@@ -213,6 +213,8 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 @property(nonatomic, strong) UISlider *bubbleOpacitySlider;
 @property(nonatomic, strong) UISwitch *hapticsSwitch;
 @property(nonatomic) NSInteger colorTarget;
+@property(nonatomic) NSInteger documentPickerPurpose; // 0=video, 1=export patch/payload
+@property(nonatomic, strong) NSURL *pendingExportSourceURL;
 - (void)refreshControls;
 @end
 
@@ -489,6 +491,9 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 
     [self.stack addArrangedSubview:[self button:@"Escolher / trocar vídeo" action:@selector(chooseVideo)]];
 
+    [self label:@"Ferramentas de patch" size:13];
+    [self.stack addArrangedSubview:[self button:@"Exportar .3105 / arquivo + caminho" action:@selector(choosePatchForExport)]];
+
     [self label:@"Tamanho do botão flutuante" size:13];
     self.bubbleSizeSlider = [UISlider new];
     self.bubbleSizeSlider.minimumValue = 42; self.bubbleSizeSlider.maximumValue = 82;
@@ -638,6 +643,7 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 }
 
 - (void)chooseVideo {
+    self.documentPickerPurpose = 0;
     UIDocumentPickerViewController *picker =
         [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeMovie, UTTypeMPEG4Movie] asCopy:YES];
     picker.delegate = self;
@@ -647,9 +653,136 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     [vc presentViewController:picker animated:YES completion:nil];
 }
 
+- (void)choosePatchForExport {
+    self.documentPickerPurpose = 1;
+    UIDocumentPickerViewController *picker =
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    UIViewController *vc = self.window.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    [vc presentViewController:picker animated:YES completion:nil];
+}
+
+- (UIViewController *)scuiTopController {
+    UIViewController *vc = self.window.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    return vc;
+}
+
+- (NSString *)scuiSanitizedRelativePath:(NSString *)input {
+    NSString *p = [input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    p = [p stringByReplacingOccurrencesOfString:@"\\\\" withString:@"/"];
+    while ([p hasPrefix:@"/"]) p = [p substringFromIndex:1];
+    NSMutableArray<NSString *> *safe = [NSMutableArray array];
+    for (NSString *part in [p componentsSeparatedByString:@"/"]) {
+        if (!part.length || [part isEqualToString:@"."]) continue;
+        if ([part isEqualToString:@".."]) continue;
+        [safe addObject:part];
+    }
+    return [safe componentsJoinedByString:@"/"];
+}
+
+- (void)askExportPathForURL:(NSURL *)src {
+    self.pendingExportSourceURL = src;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Exportar patch"
+        message:@"Informe a pasta de destino usada pelo patch. O ZIP terá essa mesma estrutura e também um PATCH_PATH.txt."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+        f.placeholder = @"com.dts.freefireth/Documents/...";
+        f.text = @"com.dts.freefireth/Documents/";
+        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        f.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+        f.placeholder = @"Nome final (opcional)";
+        f.text = src.lastPathComponent ?: @"patch.bin";
+        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        f.autocorrectionType = UITextAutocorrectionTypeNo;
+    }];
+    __weak typeof(self) weakSelf = self;
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Gerar ZIP" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        NSString *folder = a.textFields.firstObject.text ?: @"";
+        NSString *name = a.textFields.count > 1 ? a.textFields[1].text : @"";
+        [weakSelf createPatchExportFromURL:src targetFolder:folder finalName:name];
+    }]];
+    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+
+- (void)showExportError:(NSString *)message {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Exportação"
+        message:message ?: @"Falha desconhecida."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+
+- (void)createPatchExportFromURL:(NSURL *)src targetFolder:(NSString *)folder finalName:(NSString *)finalName {
+    if (!src) { [self showExportError:@"Arquivo de origem não encontrado."]; return; }
+    NSString *safeFolder = [self scuiSanitizedRelativePath:folder ?: @""];
+    NSString *safeName = [finalName lastPathComponent];
+    if (!safeName.length) safeName = src.lastPathComponent ?: @"patch.bin";
+    if (!safeFolder.length) { [self showExportError:@"Informe o caminho de destino."]; return; }
+
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *stamp = [NSString stringWithFormat:@"%.0f", NSDate.date.timeIntervalSince1970];
+    NSURL *root = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
+        URLByAppendingPathComponent:[@"SatanabePatchExport-" stringByAppendingString:stamp] isDirectory:YES];
+    [fm removeItemAtURL:root error:nil];
+    NSError *error = nil;
+    if (![fm createDirectoryAtURL:root withIntermediateDirectories:YES attributes:nil error:&error]) {
+        [self showExportError:error.localizedDescription]; return;
+    }
+
+    NSURL *targetDir = [root URLByAppendingPathComponent:safeFolder isDirectory:YES];
+    if (![fm createDirectoryAtURL:targetDir withIntermediateDirectories:YES attributes:nil error:&error]) {
+        [self showExportError:error.localizedDescription]; return;
+    }
+    NSURL *payloadDst = [targetDir URLByAppendingPathComponent:safeName];
+    [fm removeItemAtURL:payloadDst error:nil];
+    BOOL access = [src startAccessingSecurityScopedResource];
+    BOOL copied = [fm copyItemAtURL:src toURL:payloadDst error:&error];
+    if (access) [src stopAccessingSecurityScopedResource];
+    if (!copied) { [self showExportError:error.localizedDescription]; return; }
+
+    NSString *fullTarget = [safeFolder stringByAppendingPathComponent:safeName];
+    NSString *txt = [NSString stringWithFormat:
+        @"SATANABE PATCH EXPORT\\n\\nCaminho destino:\\n/%@\\n\\nArquivo final:\\n%@\\n\\nArquivo de origem:\\n%@\\n",
+        fullTarget, safeName, src.lastPathComponent ?: @"-"];
+    [txt writeToURL:[root URLByAppendingPathComponent:@"PATCH_PATH.txt"]
+        atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    // NSFileCoordinatorReadingForUploading turns a directory into a temporary ZIP on iOS.
+    NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+    __block NSURL *zipURL = nil;
+    __block NSError *coordError = nil;
+    [coordinator coordinateReadingItemAtURL:root options:NSFileCoordinatorReadingForUploading
+        error:&coordError byAccessor:^(NSURL *newURL) {
+            NSURL *out = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
+                URLByAppendingPathComponent:@"Satanabe-Patch-Export.zip"];
+            [fm removeItemAtURL:out error:nil];
+            NSError *copyError = nil;
+            if ([fm copyItemAtURL:newURL toURL:out error:&copyError]) zipURL = out;
+            else coordError = copyError;
+        }];
+    if (!zipURL) { [self showExportError:coordError.localizedDescription ?: @"Não foi possível gerar o ZIP."]; return; }
+
+    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[zipURL] applicationActivities:nil];
+    if (share.popoverPresentationController) {
+        share.popoverPresentationController.sourceView = self.bubble;
+        share.popoverPresentationController.sourceRect = self.bubble.bounds;
+    }
+    [[self scuiTopController] presentViewController:share animated:YES completion:nil];
+}
+
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
     NSURL *src = urls.firstObject;
     if (!src) return;
+    if (self.documentPickerPurpose == 1) {
+        [self askExportPathForURL:src];
+        return;
+    }
     NSURL *dst = [SCUIManager.shared customVideoURL];
     NSFileManager *fm = NSFileManager.defaultManager;
     [fm removeItemAtURL:dst error:nil];
