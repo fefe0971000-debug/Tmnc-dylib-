@@ -5,7 +5,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 
-static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5";
+static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5.3";
 static const void *SCUIOriginalHiddenKey = &SCUIOriginalHiddenKey;
 static const void *SCUIGlassOverlayKey = &SCUIGlassOverlayKey;
 static const void *SCUIOriginalBorderWidthKey = &SCUIOriginalBorderWidthKey;
@@ -333,20 +333,28 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 @end
 
 
-#pragma mark - Local .3105 exporter
+#pragma mark - Local 3105 / PatchProject exporter
+
+@interface SCUIPatchCandidate : NSObject
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic, copy) NSString *subtitle;
+@property(nonatomic, strong) NSURL *url;
+@property(nonatomic) NSInteger kind; // 0 = .3105/package bytes, 1 = decoded PatchProject directory
+@end
+@implementation SCUIPatchCandidate @end
 
 @interface SCUIPatchExportController : UIViewController <UITableViewDataSource, UITableViewDelegate>
-@property(nonatomic, strong) NSArray<NSURL *> *items;
+@property(nonatomic, strong) NSArray<SCUIPatchCandidate *> *items;
 @property(nonatomic, strong) NSMutableSet<NSNumber *> *selectedRows;
 @property(nonatomic, strong) UITableView *tableView;
-@property(nonatomic, copy) void (^exportHandler)(NSArray<NSURL *> *urls);
+@property(nonatomic, copy) void (^exportHandler)(NSArray<SCUIPatchCandidate *> *items);
 @end
 
 @implementation SCUIPatchExportController
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Patches .3105";
+    self.title = @"Patches instalados";
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     self.selectedRows = [NSMutableSet set];
 
@@ -374,14 +382,14 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 - (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
 
 - (void)exportPressed {
-    NSMutableArray<NSURL *> *chosen = [NSMutableArray array];
+    NSMutableArray<SCUIPatchCandidate *> *chosen = [NSMutableArray array];
     NSArray<NSNumber *> *ordered = [[self.selectedRows allObjects] sortedArrayUsingSelector:@selector(compare:)];
     for (NSNumber *n in ordered) {
         NSInteger i = n.integerValue;
         if (i >= 0 && i < (NSInteger)self.items.count) [chosen addObject:self.items[(NSUInteger)i]];
     }
     if (!chosen.count) return;
-    void (^handler)(NSArray<NSURL *> *) = self.exportHandler;
+    void (^handler)(NSArray<SCUIPatchCandidate *> *) = self.exportHandler;
     [self dismissViewControllerAnimated:YES completion:^{ if (handler) handler(chosen); }];
 }
 
@@ -389,22 +397,13 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     (void)tableView; (void)section; return (NSInteger)self.items.count;
 }
 
-- (NSString *)displayLocationForURL:(NSURL *)url {
-    NSString *path = url.path ?: @"";
-    NSString *bundle = NSBundle.mainBundle.bundlePath ?: @"";
-    NSString *home = NSHomeDirectory() ?: @"";
-    if (bundle.length && [path hasPrefix:bundle]) return [@"IPA/" stringByAppendingString:[path substringFromIndex:bundle.length]];
-    if (home.length && [path hasPrefix:home]) return [@"Sandbox/" stringByAppendingString:[path substringFromIndex:home.length]];
-    return path;
-}
-
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     static NSString *rid = @"SCUIPatchCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
     if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
-    NSURL *u = self.items[(NSUInteger)indexPath.row];
-    cell.textLabel.text = u.lastPathComponent ?: @"patch.3105";
-    cell.detailTextLabel.text = [self displayLocationForURL:u];
+    SCUIPatchCandidate *item = self.items[(NSUInteger)indexPath.row];
+    cell.textLabel.text = item.title.length ? item.title : @"Patch";
+    cell.detailTextLabel.text = item.subtitle ?: @"";
     cell.detailTextLabel.numberOfLines = 2;
     cell.accessoryType = [self.selectedRows containsObject:@(indexPath.row)] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
     return cell;
@@ -582,7 +581,7 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     [self.stack addArrangedSubview:[self button:@"Escolher / trocar vídeo" action:@selector(chooseVideo)]];
 
     [self label:@"Ferramentas de patch" size:13];
-    [self.stack addArrangedSubview:[self button:@"Exportar patches .3105 da IPA" action:@selector(showInstalledPatchExporter)]];
+    [self.stack addArrangedSubview:[self button:@"Exportar patches instalados" action:@selector(showInstalledPatchExporter)]];
     [self.stack addArrangedSubview:[self button:@"Exportar arquivo manualmente" action:@selector(choosePatchForExport)]];
 
     [self label:@"Tamanho do botão flutuante" size:13];
@@ -745,12 +744,73 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 }
 
 
-- (NSArray<NSURL *> *)scuiDiscover3105Files {
+- (NSString *)scuiDisplayLocationForURL:(NSURL *)url {
+    NSString *path = url.path ?: @"";
+    NSString *bundle = NSBundle.mainBundle.bundlePath ?: @"";
+    NSString *home = NSHomeDirectory() ?: @"";
+    if (bundle.length && [path hasPrefix:bundle]) return [@"IPA/" stringByAppendingString:[path substringFromIndex:bundle.length]];
+    if (home.length && [path hasPrefix:home]) return [@"Sandbox/" stringByAppendingString:[path substringFromIndex:home.length]];
+    return path;
+}
+
+- (BOOL)scuiFileHas3105Magic:(NSURL *)url {
+    NSNumber *size = nil;
+    [url getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
+    if (size && size.unsignedLongLongValue > (256ULL * 1024ULL * 1024ULL)) return NO;
+    NSFileHandle *h = [NSFileHandle fileHandleForReadingFromURL:url error:nil];
+    if (!h) return NO;
+    NSData *d = [h readDataOfLength:9];
+    [h closeFile];
+    if (d.length != 9) return NO;
+    const char magic[9] = {'3','1','0','5','P','A','T','C','H'};
+    return memcmp(d.bytes, magic, 9) == 0;
+}
+
+- (NSString *)scuiFirstStringForKeys:(NSArray<NSString *> *)keys inObject:(id)obj {
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        NSDictionary *d = (NSDictionary *)obj;
+        for (NSString *k in keys) {
+            id v = d[k];
+            if ([v isKindOfClass:NSString.class] && [v length]) return v;
+        }
+        for (id v in d.allValues) {
+            NSString *hit = [self scuiFirstStringForKeys:keys inObject:v];
+            if (hit.length) return hit;
+        }
+    } else if ([obj isKindOfClass:NSArray.class]) {
+        for (id v in (NSArray *)obj) {
+            NSString *hit = [self scuiFirstStringForKeys:keys inObject:v];
+            if (hit.length) return hit;
+        }
+    }
+    return nil;
+}
+
+- (void)scuiCollectPathHintsFromObject:(id)obj prefix:(NSString *)prefix output:(NSMutableArray<NSString *> *)out {
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        NSDictionary *d = (NSDictionary *)obj;
+        for (id rawKey in d) {
+            NSString *key = [rawKey isKindOfClass:NSString.class] ? rawKey : [rawKey description];
+            id v = d[rawKey];
+            NSString *lower = key.lowercaseString;
+            BOOL interesting = [lower containsString:@"path"] || [lower containsString:@"relative"] ||
+                               [lower containsString:@"target"] || [lower containsString:@"bundle"] ||
+                               [lower containsString:@"package"] || [lower containsString:@"file"] ||
+                               [lower containsString:@"name"];
+            if (interesting && [v isKindOfClass:NSString.class] && [v length]) {
+                [out addObject:[NSString stringWithFormat:@"%@: %@", key, v]];
+            }
+            [self scuiCollectPathHintsFromObject:v prefix:key output:out];
+        }
+    } else if ([obj isKindOfClass:NSArray.class]) {
+        for (id v in (NSArray *)obj) [self scuiCollectPathHintsFromObject:v prefix:prefix output:out];
+    }
+}
+
+- (NSArray<SCUIPatchCandidate *> *)scuiDiscoverPatchCandidates {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSMutableArray<NSURL *> *roots = [NSMutableArray array];
-    NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
-    if (bundleURL) [roots addObject:bundleURL];
-
+    if (NSBundle.mainBundle.bundleURL) [roots addObject:NSBundle.mainBundle.bundleURL];
     NSString *home = NSHomeDirectory();
     if (home.length) {
         for (NSString *sub in @[@"Documents", @"Library", @"tmp"]) {
@@ -760,42 +820,140 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
         }
     }
 
-    NSMutableArray<NSURL *> *found = [NSMutableArray array];
+    NSMutableArray<SCUIPatchCandidate *> *found = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    NSArray *keys = @[NSURLIsRegularFileKey, NSURLNameKey];
+    NSArray *keys = @[NSURLIsRegularFileKey, NSURLIsDirectoryKey, NSURLNameKey, NSURLFileSizeKey];
+
     for (NSURL *root in roots) {
-        NSDirectoryEnumerator *en = [fm enumeratorAtURL:root
-            includingPropertiesForKeys:keys
-            options:(NSDirectoryEnumerationSkipsHiddenFiles | NSDirectoryEnumerationSkipsPackageDescendants)
-            errorHandler:^BOOL(NSURL *url, NSError *error) { (void)url; (void)error; return YES; }];
+        NSDirectoryEnumerator *en = [fm enumeratorAtURL:root includingPropertiesForKeys:keys
+            options:0 errorHandler:^BOOL(NSURL *url, NSError *error) { (void)url; (void)error; return YES; }];
         for (NSURL *u in en) {
-            if (![[u.pathExtension lowercaseString] isEqualToString:@"3105"]) continue;
+            NSNumber *isRegular = nil;
+            [u getResourceValue:&isRegular forKey:NSURLIsRegularFileKey error:nil];
+            if (!isRegular.boolValue) continue;
+
+            NSString *name = u.lastPathComponent ?: @"";
             NSString *canonical = u.URLByStandardizingPath.path ?: u.path;
-            if (!canonical.length || [seen containsObject:canonical]) continue;
-            [seen addObject:canonical];
-            [found addObject:u];
+            if (!canonical.length) continue;
+
+            // 3105 normal stores decoded projects behind a hidden .3105-project.plist.
+            if ([name isEqualToString:@".3105-project.plist"]) {
+                NSURL *dir = [u URLByDeletingLastPathComponent];
+                NSString *projectKey = [@"project:" stringByAppendingString:(dir.URLByStandardizingPath.path ?: dir.path ?: @"")];
+                if ([seen containsObject:projectKey]) continue;
+                NSDictionary *plist = [NSDictionary dictionaryWithContentsOfURL:u];
+                NSString *title = [self scuiFirstStringForKeys:@[@"displayName", @"name", @"title"] inObject:plist];
+                if (!title.length) title = dir.lastPathComponent ?: @"Patch importado";
+                SCUIPatchCandidate *c = [SCUIPatchCandidate new];
+                c.title = title;
+                c.subtitle = [NSString stringWithFormat:@"Projeto 3105 • %@", [self scuiDisplayLocationForURL:dir]];
+                c.url = dir;
+                c.kind = 1;
+                [seen addObject:projectKey];
+                [found addObject:c];
+                continue;
+            }
+
+            BOOL ext3105 = [[u.pathExtension lowercaseString] isEqualToString:@"3105"];
+            BOOL magic3105 = ext3105 ? YES : [self scuiFileHas3105Magic:u];
+            if (!magic3105) continue;
+            NSString *fileKey = [@"file:" stringByAppendingString:canonical];
+            if ([seen containsObject:fileKey]) continue;
+            SCUIPatchCandidate *c = [SCUIPatchCandidate new];
+            NSString *title = u.lastPathComponent.length ? u.lastPathComponent : @"Patch.3105";
+            if (!ext3105) title = [[title stringByDeletingPathExtension] stringByAppendingPathExtension:@"3105"];
+            c.title = title;
+            c.subtitle = [NSString stringWithFormat:@"Pacote 3105 • %@", [self scuiDisplayLocationForURL:u]];
+            c.url = u;
+            c.kind = 0;
+            [seen addObject:fileKey];
+            [found addObject:c];
         }
     }
-    [found sortUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
-        return [(a.lastPathComponent ?: @"") localizedCaseInsensitiveCompare:(b.lastPathComponent ?: @"")];
+    [found sortUsingComparator:^NSComparisonResult(SCUIPatchCandidate *a, SCUIPatchCandidate *b) {
+        return [(a.title ?: @"") localizedCaseInsensitiveCompare:(b.title ?: @"")];
     }];
     return found;
 }
 
+- (NSURL *)scuiPrepareCandidateForSharing:(SCUIPatchCandidate *)item error:(NSError **)error {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (!item.url) return nil;
+    if (item.kind == 0) {
+        // Keep genuine .3105 untouched. If the cache removed the extension, export a byte-for-byte copy with .3105.
+        if ([[item.url.pathExtension lowercaseString] isEqualToString:@"3105"]) return item.url;
+        NSString *rawTitle = item.title ?: @"Patch.3105";
+        NSString *safe = [[rawTitle lastPathComponent] stringByDeletingPathExtension];
+        NSURL *dst = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:[safe stringByAppendingPathExtension:@"3105"]];
+        [fm removeItemAtURL:dst error:nil];
+        if (![fm copyItemAtURL:item.url toURL:dst error:error]) return nil;
+        return dst;
+    }
+
+    // Decoded PatchProject: preserve the whole project and add a readable path report.
+    NSString *rawBase = item.title ?: @"PatchProject";
+    NSString *base = [[rawBase lastPathComponent] stringByReplacingOccurrencesOfString:@"/" withString:@"-"];
+    if (!base.length) base = @"PatchProject";
+    NSURL *stage = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:[@"SCUI-" stringByAppendingString:[[NSUUID UUID] UUIDString]] isDirectory:YES];
+    NSURL *projectCopy = [stage URLByAppendingPathComponent:base isDirectory:YES];
+    [fm removeItemAtURL:stage error:nil];
+    if (![fm createDirectoryAtURL:stage withIntermediateDirectories:YES attributes:nil error:error]) return nil;
+    if (![fm copyItemAtURL:item.url toURL:projectCopy error:error]) return nil;
+
+    NSURL *manifest = [projectCopy URLByAppendingPathComponent:@".3105-project.plist"];
+    NSDictionary *plist = [NSDictionary dictionaryWithContentsOfURL:manifest];
+    NSMutableArray<NSString *> *hints = [NSMutableArray array];
+    if (plist) [self scuiCollectPathHintsFromObject:plist prefix:@"" output:hints];
+    NSMutableString *report = [NSMutableString stringWithFormat:@"3105 PATCH PROJECT EXPORT\nNome: %@\nOrigem: %@\n\n", item.title ?: @"Patch", item.url.path ?: @"-"];
+    if (hints.count) {
+        [report appendString:@"CAMINHOS/METADADOS ENCONTRADOS:\n"];
+        for (NSString *line in hints) [report appendFormat:@"%@\n", line];
+    } else {
+        [report appendString:@"O manifesto não expôs caminhos legíveis. A pasta do projeto foi preservada integralmente.\n"];
+    }
+    [report writeToURL:[stage URLByAppendingPathComponent:@"PATCH_PATH.txt"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
+
+    NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+    __block NSURL *zipURL = nil;
+    __block NSError *coordError = nil;
+    [coordinator coordinateReadingItemAtURL:stage options:NSFileCoordinatorReadingForUploading error:&coordError byAccessor:^(NSURL *newURL) {
+        NSString *zipName = [base stringByAppendingString:@"-3105-project.zip"];
+        NSURL *out = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:zipName];
+        [fm removeItemAtURL:out error:nil];
+        NSError *copyError = nil;
+        if ([fm copyItemAtURL:newURL toURL:out error:&copyError]) zipURL = out;
+        else coordError = copyError;
+    }];
+    if (!zipURL && error) *error = coordError;
+    return zipURL;
+}
+
 - (void)showInstalledPatchExporter {
-    NSArray<NSURL *> *patches = [self scuiDiscover3105Files];
+    NSArray<SCUIPatchCandidate *> *patches = [self scuiDiscoverPatchCandidates];
     if (!patches.count) {
-        [self showExportError:@"Nenhum arquivo .3105 foi encontrado dentro da IPA ou no sandbox do Satanabe External. Se um patch só existe no Supabase e ainda não foi baixado pelo app, ele não existe localmente para a dylib exportar."];
+        [self showExportError:@"Nenhum pacote 3105 nem projeto importado foi encontrado. Esta versão também procura arquivos com assinatura 3105PATCH e projetos .3105-project.plist, inclusive arquivos ocultos do sandbox."];
         return;
     }
 
     SCUIPatchExportController *list = [SCUIPatchExportController new];
     list.items = patches;
     __weak SCUIOverlay *weakOverlay = self;
-    list.exportHandler = ^(NSArray<NSURL *> *urls) {
+    list.exportHandler = ^(NSArray<SCUIPatchCandidate *> *items) {
         SCUIOverlay *overlay = weakOverlay;
-        if (!overlay || !urls.count) return;
-        UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:urls applicationActivities:nil];
+        if (!overlay || !items.count) return;
+        NSMutableArray<NSURL *> *shareURLs = [NSMutableArray array];
+        NSMutableArray<NSString *> *errors = [NSMutableArray array];
+        for (SCUIPatchCandidate *item in items) {
+            NSError *e = nil;
+            NSURL *prepared = [overlay scuiPrepareCandidateForSharing:item error:&e];
+            if (prepared) [shareURLs addObject:prepared];
+            else [errors addObject:[NSString stringWithFormat:@"%@: %@", item.title ?: @"Patch", e.localizedDescription ?: @"falha ao preparar"]];
+        }
+        if (!shareURLs.count) {
+            [overlay showExportError:errors.count ? [errors componentsJoinedByString:@"\n"] : @"Não foi possível preparar os patches."];
+            return;
+        }
+        UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:shareURLs applicationActivities:nil];
         if (share.popoverPresentationController) {
             share.popoverPresentationController.sourceView = overlay.bubble;
             share.popoverPresentationController.sourceRect = overlay.bubble.bounds;
