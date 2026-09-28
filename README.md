@@ -1,36 +1,26 @@
-# SatanabeCleanUI v4.1
+# SatanabeCleanUI v5
 
-Dylib de aparência para o Satanabe External.
+Pacote de personalização visual/UX para o próprio app iOS.
 
-## Menu flutuante
-- Liquid Glass: liga/desliga o efeito.
-- Intensidade do Glass.
-- Cor dos cards.
-- Cor do destaque/bordas.
-- Vídeo de fundo: liga/desliga.
-- Fonte do vídeo: Original ou Personalizado.
-- Escolher/trocar vídeo: abre o seletor de arquivos do iOS e copia o vídeo escolhido para o sandbox do app.
-- Restaurar visual original.
+## Incluído
+- Liquid Glass liga/desliga
+- Intensidade do Glass
+- Cor dos cards
+- Cor de destaque/bordas
+- Raio dos cards
+- Espessura das bordas
+- Vídeo original ou personalizado
+- Seletor de vídeo pelo app Arquivos
+- Vídeo em loop via AVPlayerLooper
+- Botão flutuante arrastável com posição persistente
+- Tamanho e opacidade do botão flutuante
+- Feedback tátil opcional
+- Cópia da configuração em JSON
+- Restauração do visual original
+- Watchdog leve para recriar somente o botão flutuante
+- Correção de recursão em UIVisualEffectView herdada da v4.1
 
-As preferências ficam em NSUserDefaults. O vídeo personalizado fica em:
-Library/Application Support/SatanabeCleanUI/background.mp4
+Não altera autenticação, keys, Supabase, patches, anti-cheat, DRM ou sandbox.
 
-A dylib não altera Supabase, keys ou lógica dos patches.
-
-## GitHub
-Estrutura:
-.github/workflows/build.yml
-Source/SatanabeCleanUI.mm
-Makefile
-
-Abra Actions > Build SatanabeCleanUI v4.1 > Run workflow.
-Baixe o artifact SatanabeCleanUI-v4.
-
-## eSign
-Injete SatanabeCleanUI.dylib no executável do seu próprio app, assine novamente e instale.
-
-## v4.1 crash fix
-- O primeiro boot preserva o vídeo e o visual originais.
-- Liquid Glass começa desligado.
-- Corrigida recursão no UIVisualEffectView que podia crescer a árvore de views até o app encerrar.
-- O watchdog do flutuante não reaplica o visual a cada segundo.
+## Build
+Use o workflow `.github/workflows/build.yml` no GitHub Actions em um runner macOS com Xcode, ou rode `make` em macOS com Xcode instalado.
