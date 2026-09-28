@@ -4,8 +4,9 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
+#import <mach-o/dyld.h>
 
-static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5.5";
+static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5.8";
 static const void *SCUIOriginalHiddenKey = &SCUIOriginalHiddenKey;
 static const void *SCUIGlassOverlayKey = &SCUIGlassOverlayKey;
 static const void *SCUIOriginalBorderWidthKey = &SCUIOriginalBorderWidthKey;
@@ -37,7 +38,9 @@ static NSMutableDictionary *SCUIPrefs(void) {
         @"apiSourceHost": @"",
         @"apiPathFilter": @"/api/license/validate,/api/patches,/api/patches/external,/functions/v1/Validate-licenses,/functions/v1/validate-license",
         @"apiPreservePath": @YES,
-        @"localLicenseBypass": @NO
+        @"localLicenseBypass": @NO,
+        @"apiLoggerEnabled": @YES,
+        @"apiLoggerCaptureBodies": @YES
     } mutableCopy];
     if (saved) [p addEntriesFromDictionary:saved];
     return p;
@@ -193,6 +196,378 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 }
 
 
+#pragma mark - API Logger
+
+static BOOL SCUILocalLicenseBypassEnabled(void);
+static BOOL SCUIIsLicenseValidationURL(NSURL *url);
+
+static NSString * const SCUILoggerHandledKey = @"SCUIAPILoggerHandled";
+static NSString * const SCUILoggerFileName = @"SCUI-API-Logger.jsonl";
+
+static BOOL SCUIAPILoggerEnabled(void) {
+    return [SCUIPrefs()[@"apiLoggerEnabled"] boolValue];
+}
+
+static BOOL SCUIAPILoggerCaptureBodies(void) {
+    return [SCUIPrefs()[@"apiLoggerCaptureBodies"] boolValue];
+}
+
+static NSString *SCUILoggerPath(void) {
+    NSString *dir = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    if (!dir.length) dir = NSTemporaryDirectory();
+    return [dir stringByAppendingPathComponent:SCUILoggerFileName];
+}
+
+static NSString *SCUIStringFromData(NSData *data) {
+    if (!data.length) return @"";
+    NSUInteger max = MIN((NSUInteger)262144, data.length);
+    NSData *slice = [data subdataWithRange:NSMakeRange(0, max)];
+    NSString *text = [[NSString alloc] initWithData:slice encoding:NSUTF8StringEncoding];
+    if (!text) return [NSString stringWithFormat:@"<binary %lu bytes>", (unsigned long)data.length];
+    if (data.length > max) text = [text stringByAppendingFormat:@"\n<truncated: %lu total bytes>", (unsigned long)data.length];
+    return text;
+}
+
+static NSDictionary *SCUISafeHeaders(NSDictionary *headers) {
+    if (![headers isKindOfClass:NSDictionary.class]) return @{};
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    [headers enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+        NSString *k = [key description] ?: @"";
+        NSString *lower = k.lowercaseString;
+        if ([lower containsString:@"authorization"] ||
+            [lower containsString:@"cookie"] ||
+            [lower containsString:@"token"] ||
+            [lower containsString:@"secret"]) {
+            out[k] = @"<redacted>";
+        } else {
+            out[k] = [obj description] ?: @"";
+        }
+    }];
+    return out;
+}
+
+static void SCUIAppendAPILog(NSDictionary *entry) {
+    if (!entry) return;
+    NSMutableDictionary *record = [entry mutableCopy];
+    record[@"timestamp"] = @([[NSDate date] timeIntervalSince1970]);
+    NSData *json = [NSJSONSerialization dataWithJSONObject:record options:0 error:nil];
+    if (!json.length) return;
+    NSMutableData *line = [json mutableCopy];
+    [line appendData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
+
+    @synchronized(NSFileManager.defaultManager) {
+        NSString *path = SCUILoggerPath();
+        if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+            [line writeToFile:path atomically:YES];
+        } else {
+            NSFileHandle *h = [NSFileHandle fileHandleForWritingAtPath:path];
+            @try {
+                [h seekToEndOfFile];
+                [h writeData:line];
+                [h closeFile];
+            } @catch (__unused NSException *e) {
+                [h closeFile];
+            }
+        }
+    }
+}
+
+static NSArray<NSDictionary *> *SCUIReadAPILogs(void) {
+    NSData *data = [NSData dataWithContentsOfFile:SCUILoggerPath()];
+    if (!data.length) return @[];
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+    NSMutableArray *items = [NSMutableArray array];
+    for (NSString *line in [text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        if (!line.length) continue;
+        NSData *d = [line dataUsingEncoding:NSUTF8StringEncoding];
+        id obj = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+        if ([obj isKindOfClass:NSDictionary.class]) [items addObject:obj];
+    }
+    return items;
+}
+
+static NSString *SCUIPrettyLog(NSDictionary *log) {
+    if (!log) return @"";
+    NSData *d = [NSJSONSerialization dataWithJSONObject:log options:NSJSONWritingPrettyPrinted error:nil];
+    return [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] ?: [log description];
+}
+
+static void SCUICollectURLsFromFile(NSString *path, NSMutableOrderedSet<NSString *> *urls) {
+    if (!path.length || !urls) return;
+    NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+    if (!data.length) return;
+
+    NSString *blob = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    if (!blob.length) return;
+
+    NSRegularExpression *regex =
+        [NSRegularExpression regularExpressionWithPattern:@"https?://[^\\\\x00\\\\s\\\"'<>]+"
+                                                  options:NSRegularExpressionCaseInsensitive
+                                                    error:nil];
+    if (!regex) return;
+
+    [regex enumerateMatchesInString:blob options:0 range:NSMakeRange(0, blob.length)
+                         usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags, BOOL *stop) {
+        if (!result || result.range.location == NSNotFound) return;
+        NSString *value = [blob substringWithRange:result.range];
+        while ([value hasSuffix:@"."] || [value hasSuffix:@","] ||
+               [value hasSuffix:@")"] || [value hasSuffix:@"]"] ||
+               [value hasSuffix:@"}"]) {
+            value = [value substringToIndex:value.length - 1];
+        }
+        if (value.length) [urls addObject:value];
+    }];
+}
+
+static NSArray<NSString *> *SCUIStaticURLInventory(void) {
+    NSMutableOrderedSet<NSString *> *urls = [NSMutableOrderedSet orderedSet];
+
+    // Main executable.
+    SCUICollectURLsFromFile(NSBundle.mainBundle.executablePath, urls);
+
+    // Every Mach-O image currently loaded in the process (frameworks/dylibs included).
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (!name) continue;
+        NSString *path = [NSString stringWithUTF8String:name];
+        if (path.length) SCUICollectURLsFromFile(path, urls);
+    }
+
+    return urls.array;
+}
+
+static void SCUILogStaticURLInventory(void) {
+    NSArray<NSString *> *urls = SCUIStaticURLInventory();
+    for (NSString *url in urls) {
+        SCUIAppendAPILog(@{
+            @"event": @"static_url",
+            @"method": @"STATIC",
+            @"url": url ?: @"",
+            @"source": @"loaded_macho_inventory"
+        });
+    }
+}
+
+
+static NSString *SCUIFindStringForKeys(id obj, NSSet<NSString *> *wanted) {
+    if (!obj || !wanted.count) return nil;
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        for (id rawKey in [(NSDictionary *)obj allKeys]) {
+            NSString *key = [[rawKey description] lowercaseString];
+            id value = ((NSDictionary *)obj)[rawKey];
+            if ([wanted containsObject:key] && [value isKindOfClass:NSString.class] && [value length]) {
+                return value;
+            }
+            NSString *nested = SCUIFindStringForKeys(value, wanted);
+            if (nested.length) return nested;
+        }
+    } else if ([obj isKindOfClass:NSArray.class]) {
+        for (id value in (NSArray *)obj) {
+            NSString *nested = SCUIFindStringForKeys(value, wanted);
+            if (nested.length) return nested;
+        }
+    }
+    return nil;
+}
+
+static NSString *SCUILicenseKeyFromRequest(NSURLRequest *request) {
+    NSSet *wanted = [NSSet setWithArray:@[@"key", @"licensekey", @"license_key", @"license", @"code", @"activationkey", @"activation_key"]];
+
+    if (request.HTTPBody.length) {
+        id json = [NSJSONSerialization JSONObjectWithData:request.HTTPBody options:0 error:nil];
+        NSString *hit = SCUIFindStringForKeys(json, wanted);
+        if (hit.length) return hit;
+
+        NSString *body = [[NSString alloc] initWithData:request.HTTPBody encoding:NSUTF8StringEncoding];
+        if (body.length) {
+            NSURLComponents *fake = [NSURLComponents componentsWithString:[@"https://local.invalid/?" stringByAppendingString:body]];
+            for (NSURLQueryItem *item in fake.queryItems ?: @[]) {
+                if ([wanted containsObject:item.name.lowercaseString] && item.value.length) return item.value;
+            }
+        }
+    }
+
+    NSURLComponents *components = [NSURLComponents componentsWithURL:request.URL resolvingAgainstBaseURL:NO];
+    for (NSURLQueryItem *item in components.queryItems ?: @[]) {
+        if ([wanted containsObject:item.name.lowercaseString] && item.value.length) return item.value;
+    }
+
+    NSDictionary *headers = request.allHTTPHeaderFields ?: @{};
+    for (NSString *name in headers) {
+        NSString *lower = name.lowercaseString;
+        if ([wanted containsObject:lower] || [lower containsString:@"license-key"] || [lower containsString:@"activation-key"]) {
+            NSString *value = [headers[name] description];
+            if (value.length) return value;
+        }
+    }
+    return nil;
+}
+
+static NSNumber *SCUIFindBoolForKeys(id obj, NSSet<NSString *> *wanted) {
+    if (!obj || !wanted.count) return nil;
+    if ([obj isKindOfClass:NSDictionary.class]) {
+        for (id rawKey in [(NSDictionary *)obj allKeys]) {
+            NSString *key = [[rawKey description] lowercaseString];
+            id value = ((NSDictionary *)obj)[rawKey];
+            if ([wanted containsObject:key] && [value respondsToSelector:@selector(boolValue)]) {
+                return @([value boolValue]);
+            }
+            NSNumber *nested = SCUIFindBoolForKeys(value, wanted);
+            if (nested) return nested;
+        }
+    } else if ([obj isKindOfClass:NSArray.class]) {
+        for (id value in (NSArray *)obj) {
+            NSNumber *nested = SCUIFindBoolForKeys(value, wanted);
+            if (nested) return nested;
+        }
+    }
+    return nil;
+}
+
+static NSString *SCUIValidationResultFromData(NSData *data, NSInteger statusCode) {
+    if (data.length) {
+        id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        NSNumber *valid = SCUIFindBoolForKeys(json, [NSSet setWithArray:@[@"valid", @"success", @"ok", @"authorized", @"active"]]);
+        if (valid) return valid.boolValue ? @"VALID" : @"INVALID";
+
+        NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].lowercaseString;
+        if ([text containsString:@"invalid"] || [text containsString:@"inválid"] ||
+            [text containsString:@"expired"] || [text containsString:@"expirad"] ||
+            [text containsString:@"revoked"] || [text containsString:@"revogad"]) return @"INVALID";
+        if ([text containsString:@"valid"] || [text containsString:@"ativad"] ||
+            [text containsString:@"authorized"] || [text containsString:@"success"]) return @"VALID";
+    }
+
+    // HTTP status alone is not enough to call a key valid, but common auth failures
+    // can safely be marked as an invalid/denied validation attempt.
+    if (statusCode == 401 || statusCode == 403 || statusCode == 422) return @"INVALID";
+    return nil;
+}
+
+static NSDictionary *SCUILatestAPILog(void) {
+    return SCUIReadAPILogs().lastObject;
+}
+
+@interface SCUIAPILoggerProtocol : NSURLProtocol <NSURLSessionDataDelegate>
+@property(nonatomic, strong) NSURLSession *forwardSession;
+@property(nonatomic, strong) NSURLSessionDataTask *forwardTask;
+@property(nonatomic, strong) NSMutableData *responseData;
+@property(nonatomic, strong) NSURLResponse *capturedResponse;
+@property(nonatomic, assign) NSTimeInterval startedAt;
+@property(nonatomic, copy) NSString *requestID;
+@end
+
+@implementation SCUIAPILoggerProtocol
+
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    if (!SCUIAPILoggerEnabled()) return NO;
+    if ([NSURLProtocol propertyForKey:SCUILoggerHandledKey inRequest:request]) return NO;
+    NSString *scheme = request.URL.scheme.lowercaseString ?: @"";
+    return [scheme isEqualToString:@"http"] || [scheme isEqualToString:@"https"];
+}
+
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
+
+- (void)startLoading {
+    self.startedAt = [NSDate date].timeIntervalSince1970;
+    self.responseData = [NSMutableData data];
+    self.requestID = NSUUID.UUID.UUIDString;
+
+    NSMutableURLRequest *req = [self.request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:SCUILoggerHandledKey inRequest:req];
+
+    NSMutableDictionary *requestLog = [NSMutableDictionary dictionary];
+    requestLog[@"event"] = @"request";
+    requestLog[@"method"] = req.HTTPMethod ?: @"GET";
+    requestLog[@"url"] = req.URL.absoluteString ?: @"";
+    requestLog[@"headers"] = SCUISafeHeaders(req.allHTTPHeaderFields ?: @{});
+    requestLog[@"requestId"] = self.requestID ?: @"";
+    NSString *licenseKey = SCUILicenseKeyFromRequest(req);
+    if (licenseKey.length) requestLog[@"licenseKey"] = licenseKey;
+    if (SCUIAPILoggerCaptureBodies() && req.HTTPBody.length) requestLog[@"body"] = SCUIStringFromData(req.HTTPBody);
+    SCUIAppendAPILog(requestLog);
+
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    cfg.protocolClasses = @[];
+    self.forwardSession = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
+    self.forwardTask = [self.forwardSession dataTaskWithRequest:req];
+    [self.forwardTask resume];
+}
+
+- (void)stopLoading {
+    [self.forwardTask cancel];
+    [self.forwardSession invalidateAndCancel];
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask
+didReceiveResponse:(NSURLResponse *)response
+ completionHandler:(void (^)(NSURLSessionResponseDisposition disposition))completionHandler {
+    self.capturedResponse = response;
+    [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    completionHandler(NSURLSessionResponseAllow);
+}
+
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)dataTask didReceiveData:(NSData *)data {
+    if (data.length) {
+        [self.responseData appendData:data];
+        [self.client URLProtocol:self didLoadData:data];
+    }
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    NSMutableDictionary *responseLog = [NSMutableDictionary dictionary];
+    responseLog[@"event"] = @"response";
+    responseLog[@"method"] = self.request.HTTPMethod ?: @"GET";
+    responseLog[@"url"] = self.request.URL.absoluteString ?: @"";
+    responseLog[@"elapsedMs"] = @((NSInteger)(([NSDate date].timeIntervalSince1970 - self.startedAt) * 1000.0));
+
+    if ([self.capturedResponse isKindOfClass:NSHTTPURLResponse.class]) {
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)self.capturedResponse;
+        responseLog[@"status"] = @(http.statusCode);
+        responseLog[@"headers"] = SCUISafeHeaders(http.allHeaderFields ?: @{});
+    }
+    responseLog[@"requestId"] = self.requestID ?: @"";
+    if (SCUIAPILoggerCaptureBodies() && self.responseData.length) responseLog[@"body"] = SCUIStringFromData(self.responseData);
+
+    NSString *licenseKey = SCUILicenseKeyFromRequest(self.request);
+    if (licenseKey.length) responseLog[@"licenseKey"] = licenseKey;
+    if (SCUIAPILoggerCaptureBodies() && self.request.HTTPBody.length) {
+        responseLog[@"requestBody"] = SCUIStringFromData(self.request.HTTPBody) ?: @"";
+    }
+
+    NSInteger statusCode = 0;
+    if ([self.capturedResponse isKindOfClass:NSHTTPURLResponse.class]) {
+        statusCode = ((NSHTTPURLResponse *)self.capturedResponse).statusCode;
+    }
+    NSString *validation = SCUIValidationResultFromData(self.responseData, statusCode);
+    if (validation.length) responseLog[@"validationResult"] = validation;
+
+    if (self.responseData.length) {
+        id responseJSON = [NSJSONSerialization JSONObjectWithData:self.responseData options:0 error:nil];
+        if ([responseJSON isKindOfClass:NSDictionary.class]) {
+            NSDictionary *dict = (NSDictionary *)responseJSON;
+            id message = dict[@"message"] ?: dict[@"error"] ?: dict[@"detail"];
+            if (message) responseLog[@"serverMessage"] = [message description];
+        }
+    }
+
+    if (error) responseLog[@"error"] = error.localizedDescription ?: @"unknown";
+    SCUIAppendAPILog(responseLog);
+
+    if (error) [self.client URLProtocol:self didFailWithError:error];
+    else [self.client URLProtocolDidFinishLoading:self];
+    [self.forwardSession finishTasksAndInvalidate];
+}
+@end
+
+static void SCUIAddLoggerProtocolToConfiguration(NSURLSessionConfiguration *cfg) {
+    if (!cfg) return;
+    NSMutableArray *classes = [cfg.protocolClasses mutableCopy] ?: [NSMutableArray array];
+    if (![classes containsObject:SCUIAPILoggerProtocol.class]) [classes addObject:SCUIAPILoggerProtocol.class];
+    cfg.protocolClasses = classes;
+}
+
 #pragma mark - Local License Test Mode
 
 static BOOL SCUILocalLicenseBypassEnabled(void) {
@@ -268,16 +643,12 @@ static NSString *SCUIDeviceIDFromRequest(NSURLRequest *request) {
 @implementation NSURLSessionConfiguration (SCUILocalLicense)
 + (NSURLSessionConfiguration *)scui_defaultSessionConfiguration {
     NSURLSessionConfiguration *cfg = [self scui_defaultSessionConfiguration];
-    NSMutableArray *classes = [cfg.protocolClasses mutableCopy] ?: [NSMutableArray array];
-    if (![classes containsObject:SCUILocalLicenseProtocol.class]) [classes insertObject:SCUILocalLicenseProtocol.class atIndex:0];
-    cfg.protocolClasses = classes;
+    SCUIAddLoggerProtocolToConfiguration(cfg);
     return cfg;
 }
 + (NSURLSessionConfiguration *)scui_ephemeralSessionConfiguration {
     NSURLSessionConfiguration *cfg = [self scui_ephemeralSessionConfiguration];
-    NSMutableArray *classes = [cfg.protocolClasses mutableCopy] ?: [NSMutableArray array];
-    if (![classes containsObject:SCUILocalLicenseProtocol.class]) [classes insertObject:SCUILocalLicenseProtocol.class atIndex:0];
-    cfg.protocolClasses = classes;
+    SCUIAddLoggerProtocolToConfiguration(cfg);
     return cfg;
 }
 @end
@@ -288,10 +659,10 @@ static void SCUISwizzleClassMethod(Class cls, SEL original, SEL replacement) {
     if (a && b) method_exchangeImplementations(a, b);
 }
 
-static void SCUIInstallLocalLicenseProtocol(void) {
+static void SCUIInstallAPILogger(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        [NSURLProtocol registerClass:SCUILocalLicenseProtocol.class];
+        [NSURLProtocol registerClass:SCUIAPILoggerProtocol.class];
         SCUISwizzleClassMethod(NSURLSessionConfiguration.class,
                               @selector(defaultSessionConfiguration),
                               @selector(scui_defaultSessionConfiguration));
@@ -433,6 +804,7 @@ static void SCUIInstallBackendRouter(void) {
 @property(nonatomic, strong) UISegmentedControl *apiProfileControl;
 @property(nonatomic, strong) UISwitch *apiPreservePathSwitch;
 @property(nonatomic, strong) UISwitch *localLicenseBypassSwitch;
+@property(nonatomic, strong) UISwitch *apiLoggerSwitch;
 @property(nonatomic) NSInteger colorTarget;
 @property(nonatomic) NSInteger documentPickerPurpose; // 0=video, 1=export patch/payload
 @property(nonatomic, strong) NSURL *pendingExportSourceURL;
@@ -441,6 +813,12 @@ static void SCUIInstallBackendRouter(void) {
 - (void)showAPIEditor;
 - (void)testActiveAPI;
 - (void)localLicenseBypassChanged:(UISwitch *)sender;
+- (void)apiLoggerChanged:(UISwitch *)sender;
+- (void)showAPILogs;
+- (void)clearAPILogs;
+- (void)shareAllAPILogs;
+- (void)scanStaticAPIURLs;
+- (void)shareLogDictionary:(NSDictionary *)log;
 @end
 
 @implementation SCUIManager
@@ -809,26 +1187,15 @@ static void SCUIInstallBackendRouter(void) {
     [self.stack addArrangedSubview:[self button:@"Exportar arquivo manualmente" action:@selector(choosePatchForExport)]];
 
 
-    [self label:@"Conexão / API" size:13];
-
-    self.localLicenseBypassSwitch = [UISwitch new];
-    [self.localLicenseBypassSwitch addTarget:self action:@selector(localLicenseBypassChanged:) forControlEvents:UIControlEventValueChanged];
-    [self rowWithTitle:@"Bypass local (teste)" control:self.localLicenseBypassSwitch];
-
-    self.apiRoutingSwitch = [UISwitch new];
-    [self.apiRoutingSwitch addTarget:self action:@selector(apiRoutingChanged:) forControlEvents:UIControlEventValueChanged];
-    [self rowWithTitle:@"Usar API selecionada" control:self.apiRoutingSwitch];
-
-    self.apiProfileControl = [[UISegmentedControl alloc] initWithItems:@[@"API A", @"API B", @"Custom"]];
-    [self.apiProfileControl addTarget:self action:@selector(apiProfileChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.stack addArrangedSubview:self.apiProfileControl];
-
-    self.apiPreservePathSwitch = [UISwitch new];
-    [self.apiPreservePathSwitch addTarget:self action:@selector(apiPreservePathChanged:) forControlEvents:UIControlEventValueChanged];
-    [self rowWithTitle:@"Preservar rota da IPA" control:self.apiPreservePathSwitch];
-
-    [self.stack addArrangedSubview:[self button:@"Editar URLs / filtros" action:@selector(showAPIEditor)]];
-    [self.stack addArrangedSubview:[self button:@"Testar API ativa" action:@selector(testActiveAPI)]];
+    [self label:@"API Logger — somente diagnóstico" size:13];
+    self.apiLoggerSwitch = [UISwitch new];
+    [self.apiLoggerSwitch addTarget:self action:@selector(apiLoggerChanged:) forControlEvents:UIControlEventValueChanged];
+    [self rowWithTitle:@"Registrar HTTP/HTTPS" control:self.apiLoggerSwitch];
+    [self label:@"Registra URL, método, status e correlação de key/resultado. Não altera requisições." size:11];
+    [self.stack addArrangedSubview:[self button:@"Ver logs da API" action:@selector(showAPILogs)]];
+    [self.stack addArrangedSubview:[self button:@"Mapear URLs do binário" action:@selector(scanStaticAPIURLs)]];
+    [self.stack addArrangedSubview:[self button:@"Compartilhar todos os logs" action:@selector(shareAllAPILogs)]];
+    [self.stack addArrangedSubview:[self button:@"Limpar logs da API" action:@selector(clearAPILogs)]];
 
     [self label:@"Tamanho do botão flutuante" size:13];
     self.bubbleSizeSlider = [UISlider new];
@@ -866,6 +1233,7 @@ static void SCUIInstallBackendRouter(void) {
     self.bubbleSizeSlider.value = [m.prefs[@"bubbleSize"] floatValue];
     self.bubbleOpacitySlider.value = [m.prefs[@"bubbleOpacity"] floatValue];
     self.hapticsSwitch.on = [m.prefs[@"haptics"] boolValue];
+    self.apiLoggerSwitch.on = [m.prefs[@"apiLoggerEnabled"] boolValue];
     self.localLicenseBypassSwitch.on = [m.prefs[@"localLicenseBypass"] boolValue];
     self.apiRoutingSwitch.on = [m.prefs[@"apiRoutingEnabled"] boolValue];
     self.apiProfileControl.selectedSegmentIndex = [m.prefs[@"apiProfile"] integerValue];
@@ -1366,6 +1734,132 @@ static void SCUIInstallBackendRouter(void) {
 }
 
 
+- (void)apiLoggerChanged:(UISwitch *)sender {
+    SCUIManager.shared.prefs[@"apiLoggerEnabled"] = @(sender.on);
+    SCUISave(SCUIManager.shared.prefs);
+}
+
+- (void)shareItems:(NSArray *)items fromView:(UIView *)view {
+    if (!items.count) return;
+    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
+    if (share.popoverPresentationController) {
+        share.popoverPresentationController.sourceView = view ?: self.window;
+        share.popoverPresentationController.sourceRect = view ? view.bounds : self.window.bounds;
+    }
+    [[self scuiTopController] presentViewController:share animated:YES completion:nil];
+}
+
+- (void)shareLogDictionary:(NSDictionary *)log {
+    [self shareItems:@[SCUIPrettyLog(log) ?: @""] fromView:self.window];
+}
+
+- (void)showAPILogs {
+    NSArray<NSDictionary *> *logs = SCUIReadAPILogs();
+    if (!logs.count) {
+        UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"API Logger"
+            message:@"Nenhuma requisição HTTP/HTTPS registrada ainda."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [[self scuiTopController] presentViewController:empty animated:YES completion:nil];
+        return;
+    }
+
+    NSArray *slice = logs.count > 20 ? [logs subarrayWithRange:NSMakeRange(logs.count - 20, 20)] : logs;
+    __block NSInteger index = (NSInteger)slice.count - 1;
+    __block void (^showOne)(void) = nil;
+    __weak typeof(self) weakSelf = self;
+
+    showOne = ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || index < 0) return;
+        NSDictionary *log = slice[(NSUInteger)index];
+        NSString *event = [log[@"event"] description] ?: @"log";
+        NSString *method = [log[@"method"] description] ?: @"";
+        NSString *url = [log[@"url"] description] ?: @"";
+        NSString *status = log[@"status"] ? [NSString stringWithFormat:@"HTTP %@", log[@"status"]] : @"";
+        NSString *validation = [log[@"validationResult"] description] ?: @"";
+        NSString *licenseKey = [log[@"licenseKey"] description] ?: @"";
+        NSString *body = [log[@"body"] description] ?: @"";
+        if (body.length > 1600) body = [[body substringToIndex:1600] stringByAppendingString:@"…"];
+
+        NSMutableArray<NSString *> *lines = [NSMutableArray array];
+        [lines addObject:[NSString stringWithFormat:@"%@ %@", event.uppercaseString, method]];
+        [lines addObject:url];
+        if (status.length) [lines addObject:status];
+        if (validation.length) [lines addObject:[NSString stringWithFormat:@"VALIDAÇÃO: %@", validation]];
+        if (licenseKey.length) [lines addObject:[NSString stringWithFormat:@"KEY: %@", licenseKey]];
+        if (body.length) {
+            [lines addObject:@""];
+            [lines addObject:body];
+        }
+        NSString *message = [lines componentsJoinedByString:@"\n"];
+
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:
+            [NSString stringWithFormat:@"API Log %ld/%lu", (long)(index + 1), (unsigned long)slice.count]
+            message:message preferredStyle:UIAlertControllerStyleAlert];
+
+        [a addAction:[UIAlertAction actionWithTitle:@"Compartilhar este log"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+            [self shareLogDictionary:log];
+        }]];
+        if (index > 0) {
+            [a addAction:[UIAlertAction actionWithTitle:@"Anterior"
+                                                 style:UIAlertActionStyleDefault
+                                               handler:^(__unused UIAlertAction *action) {
+                index--;
+                dispatch_async(dispatch_get_main_queue(), showOne);
+            }]];
+        }
+        [a addAction:[UIAlertAction actionWithTitle:@"Fechar" style:UIAlertActionStyleCancel handler:nil]];
+        [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+    };
+    showOne();
+}
+
+- (void)scanStaticAPIURLs {
+    NSArray<NSString *> *urls = SCUIStaticURLInventory();
+    SCUILogStaticURLInventory();
+
+    NSString *message = urls.count
+        ? [NSString stringWithFormat:@"%lu URL(s) HTTP/HTTPS hardcoded(s) encontradas no executável e adicionadas ao log.",
+           (unsigned long)urls.count]
+        : @"Nenhuma URL HTTP/HTTPS hardcoded foi encontrada no executável principal.";
+
+    UIAlertController *a =
+        [UIAlertController alertControllerWithTitle:@"Mapa de URLs"
+                                            message:message
+                                     preferredStyle:UIAlertControllerStyleAlert];
+
+    if (urls.count) {
+        [a addAction:[UIAlertAction actionWithTitle:@"Compartilhar URLs"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+            NSString *text = [urls componentsJoinedByString:@"\n"];
+            [self shareItems:@[text ?: @""] fromView:self.window];
+        }]];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+
+- (void)clearAPILogs {
+    [NSFileManager.defaultManager removeItemAtPath:SCUILoggerPath() error:nil];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"API Logger"
+        message:@"Logs apagados." preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+
+- (void)shareAllAPILogs {
+    NSString *path = SCUILoggerPath();
+    if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+        [self showAPILogs];
+        return;
+    }
+    [self shareItems:@[[NSURL fileURLWithPath:path]] fromView:self.window];
+}
+
 - (void)localLicenseBypassChanged:(UISwitch *)sender {
     SCUIManager.shared.prefs[@"localLicenseBypass"] = @(sender.on);
     SCUISave(SCUIManager.shared.prefs);
@@ -1466,6 +1960,7 @@ static void SCUIInstallBackendRouter(void) {
     m.prefs[@"bubbleSize"] = @56.0;
     m.prefs[@"bubbleOpacity"] = @0.90;
     m.prefs[@"haptics"] = @YES;
+    m.prefs[@"apiLoggerEnabled"] = @YES;
     m.prefs[@"localLicenseBypass"] = @NO;
     m.prefs[@"apiRoutingEnabled"] = @NO;
     m.prefs[@"apiProfile"] = @0;
@@ -1481,9 +1976,61 @@ static void SCUIInstallBackendRouter(void) {
 @end
 
 __attribute__((constructor))
+
+#pragma mark - Share latest API log from pop-ups
+
+@interface UIViewController (SCUIAPILogShare)
+- (void)scui_presentViewController:(UIViewController *)viewControllerToPresent
+                          animated:(BOOL)flag
+                        completion:(void (^)(void))completion;
+@end
+
+@implementation UIViewController (SCUIAPILogShare)
+- (void)scui_presentViewController:(UIViewController *)viewControllerToPresent
+                          animated:(BOOL)flag
+                        completion:(void (^)(void))completion {
+    if ([viewControllerToPresent isKindOfClass:UIAlertController.class] && SCUIAPILoggerEnabled()) {
+        UIAlertController *alert = (UIAlertController *)viewControllerToPresent;
+        BOOL exists = NO;
+        for (UIAlertAction *action in alert.actions) {
+            if ([action.title isEqualToString:@"Compartilhar log"]) { exists = YES; break; }
+        }
+        NSDictionary *latest = SCUILatestAPILog();
+        if (!exists && latest) {
+            [alert addAction:[UIAlertAction actionWithTitle:@"Compartilhar log"
+                                                     style:UIAlertActionStyleDefault
+                                                   handler:^(__unused UIAlertAction *action) {
+                NSDictionary *currentLog = SCUILatestAPILog() ?: latest;
+                NSString *text = SCUIPrettyLog(currentLog);
+                UIActivityViewController *share = [[UIActivityViewController alloc]
+                    initWithActivityItems:@[text ?: @""] applicationActivities:nil];
+                UIViewController *top = self;
+                while (top.presentedViewController) top = top.presentedViewController;
+                if (share.popoverPresentationController) {
+                    share.popoverPresentationController.sourceView = top.view;
+                    share.popoverPresentationController.sourceRect = top.view.bounds;
+                }
+                [top presentViewController:share animated:YES completion:nil];
+            }]];
+        }
+    }
+    [self scui_presentViewController:viewControllerToPresent animated:flag completion:completion];
+}
+@end
+
+static void SCUIInstallAlertShareHook(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Method a = class_getInstanceMethod(UIViewController.class, @selector(presentViewController:animated:completion:));
+        Method b = class_getInstanceMethod(UIViewController.class, @selector(scui_presentViewController:animated:completion:));
+        if (a && b) method_exchangeImplementations(a, b);
+    });
+}
+
 static void SCUIStart(void) {
-    SCUIInstallLocalLicenseProtocol();
-    SCUIInstallBackendRouter();
+    SCUIInstallAlertShareHook();
+    SCUIInstallAPILogger();
+    // v5.8 diagnostic build: no API rewrite and no local validation override.
 
     dispatch_async(dispatch_get_main_queue(), ^{
         SCUIManager *m = SCUIManager.shared;
