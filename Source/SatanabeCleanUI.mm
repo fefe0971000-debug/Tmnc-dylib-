@@ -5,7 +5,7 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 
-static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5.4";
+static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5.5";
 static const void *SCUIOriginalHiddenKey = &SCUIOriginalHiddenKey;
 static const void *SCUIGlassOverlayKey = &SCUIGlassOverlayKey;
 static const void *SCUIOriginalBorderWidthKey = &SCUIOriginalBorderWidthKey;
@@ -35,8 +35,9 @@ static NSMutableDictionary *SCUIPrefs(void) {
         @"apiBURL": @"",
         @"apiCustomURL": @"",
         @"apiSourceHost": @"",
-        @"apiPathFilter": @"/api/patches,/api/patches/external,/functions/v1/Validate-licenses,/functions/v1/validate-license",
-        @"apiPreservePath": @YES
+        @"apiPathFilter": @"/api/license/validate,/api/patches,/api/patches/external,/functions/v1/Validate-licenses,/functions/v1/validate-license",
+        @"apiPreservePath": @YES,
+        @"localLicenseBypass": @NO
     } mutableCopy];
     if (saved) [p addEntriesFromDictionary:saved];
     return p;
@@ -192,6 +193,114 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 }
 
 
+#pragma mark - Local License Test Mode
+
+static BOOL SCUILocalLicenseBypassEnabled(void) {
+    return [SCUIPrefs()[@"localLicenseBypass"] boolValue];
+}
+
+static BOOL SCUIIsLicenseValidationURL(NSURL *url) {
+    if (!url) return NO;
+    NSString *path = url.path.lowercaseString ?: @"";
+    return [path isEqualToString:@"/api/license/validate"] || [path hasSuffix:@"/api/license/validate"];
+}
+
+static NSString *SCUIDeviceIDFromRequest(NSURLRequest *request) {
+    NSData *body = request.HTTPBody;
+    if (body.length) {
+        id json = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
+        if ([json isKindOfClass:NSDictionary.class]) {
+            id value = ((NSDictionary *)json)[@"deviceId"] ?: ((NSDictionary *)json)[@"deviceID"];
+            if ([value isKindOfClass:NSString.class] && [value length]) return value;
+        }
+    }
+    return UIDevice.currentDevice.identifierForVendor.UUIDString ?: @"LOCAL-DEVICE";
+}
+
+@interface SCUILocalLicenseProtocol : NSURLProtocol
+@end
+
+@implementation SCUILocalLicenseProtocol
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+    if (!SCUILocalLicenseBypassEnabled()) return NO;
+    if ([NSURLProtocol propertyForKey:@"SCUILocalLicenseHandled" inRequest:request]) return NO;
+    return SCUIIsLicenseValidationURL(request.URL);
+}
+
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request {
+    return request;
+}
+
+- (void)startLoading {
+    NSMutableURLRequest *marked = [self.request mutableCopy];
+    [NSURLProtocol setProperty:@YES forKey:@"SCUILocalLicenseHandled" inRequest:marked];
+
+    NSString *deviceID = SCUIDeviceIDFromRequest(self.request);
+    NSDictionary *payload = @{
+        @"valid": @YES,
+        @"code": @"LOCAL_TEST",
+        @"message": @"Local test mode enabled",
+        @"package": @"local",
+        @"expiresAt": @"2099-12-31T23:59:59.000Z",
+        @"remainingUses": @999999,
+        @"deviceId": deviceID,
+        @"durationDays": @9999,
+        @"durationMinutes": @0,
+        @"activatedAt": @"2026-09-28T00:00:00.000Z"
+    };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil] ?: [NSData data];
+    NSHTTPURLResponse *response = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL
+        statusCode:200 HTTPVersion:@"HTTP/1.1"
+        headerFields:@{@"Content-Type": @"application/json", @"X-SCUI-Local": @"1"}];
+    [self.client URLProtocol:self didReceiveResponse:response cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+    [self.client URLProtocol:self didLoadData:data];
+    [self.client URLProtocolDidFinishLoading:self];
+}
+
+- (void)stopLoading {}
+@end
+
+@interface NSURLSessionConfiguration (SCUILocalLicense)
++ (NSURLSessionConfiguration *)scui_defaultSessionConfiguration;
++ (NSURLSessionConfiguration *)scui_ephemeralSessionConfiguration;
+@end
+
+@implementation NSURLSessionConfiguration (SCUILocalLicense)
++ (NSURLSessionConfiguration *)scui_defaultSessionConfiguration {
+    NSURLSessionConfiguration *cfg = [self scui_defaultSessionConfiguration];
+    NSMutableArray *classes = [cfg.protocolClasses mutableCopy] ?: [NSMutableArray array];
+    if (![classes containsObject:SCUILocalLicenseProtocol.class]) [classes insertObject:SCUILocalLicenseProtocol.class atIndex:0];
+    cfg.protocolClasses = classes;
+    return cfg;
+}
++ (NSURLSessionConfiguration *)scui_ephemeralSessionConfiguration {
+    NSURLSessionConfiguration *cfg = [self scui_ephemeralSessionConfiguration];
+    NSMutableArray *classes = [cfg.protocolClasses mutableCopy] ?: [NSMutableArray array];
+    if (![classes containsObject:SCUILocalLicenseProtocol.class]) [classes insertObject:SCUILocalLicenseProtocol.class atIndex:0];
+    cfg.protocolClasses = classes;
+    return cfg;
+}
+@end
+
+static void SCUISwizzleClassMethod(Class cls, SEL original, SEL replacement) {
+    Method a = class_getClassMethod(cls, original);
+    Method b = class_getClassMethod(cls, replacement);
+    if (a && b) method_exchangeImplementations(a, b);
+}
+
+static void SCUIInstallLocalLicenseProtocol(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [NSURLProtocol registerClass:SCUILocalLicenseProtocol.class];
+        SCUISwizzleClassMethod(NSURLSessionConfiguration.class,
+                              @selector(defaultSessionConfiguration),
+                              @selector(scui_defaultSessionConfiguration));
+        SCUISwizzleClassMethod(NSURLSessionConfiguration.class,
+                              @selector(ephemeralSessionConfiguration),
+                              @selector(scui_ephemeralSessionConfiguration));
+    });
+}
+
 #pragma mark - Backend Router
 
 static NSString *SCUITrim(NSString *value) {
@@ -323,6 +432,7 @@ static void SCUIInstallBackendRouter(void) {
 @property(nonatomic, strong) UISwitch *apiRoutingSwitch;
 @property(nonatomic, strong) UISegmentedControl *apiProfileControl;
 @property(nonatomic, strong) UISwitch *apiPreservePathSwitch;
+@property(nonatomic, strong) UISwitch *localLicenseBypassSwitch;
 @property(nonatomic) NSInteger colorTarget;
 @property(nonatomic) NSInteger documentPickerPurpose; // 0=video, 1=export patch/payload
 @property(nonatomic, strong) NSURL *pendingExportSourceURL;
@@ -330,6 +440,7 @@ static void SCUIInstallBackendRouter(void) {
 - (void)showInstalledPatchExporter;
 - (void)showAPIEditor;
 - (void)testActiveAPI;
+- (void)localLicenseBypassChanged:(UISwitch *)sender;
 @end
 
 @implementation SCUIManager
@@ -699,6 +810,11 @@ static void SCUIInstallBackendRouter(void) {
 
 
     [self label:@"Conexão / API" size:13];
+
+    self.localLicenseBypassSwitch = [UISwitch new];
+    [self.localLicenseBypassSwitch addTarget:self action:@selector(localLicenseBypassChanged:) forControlEvents:UIControlEventValueChanged];
+    [self rowWithTitle:@"Bypass local (teste)" control:self.localLicenseBypassSwitch];
+
     self.apiRoutingSwitch = [UISwitch new];
     [self.apiRoutingSwitch addTarget:self action:@selector(apiRoutingChanged:) forControlEvents:UIControlEventValueChanged];
     [self rowWithTitle:@"Usar API selecionada" control:self.apiRoutingSwitch];
@@ -750,6 +866,7 @@ static void SCUIInstallBackendRouter(void) {
     self.bubbleSizeSlider.value = [m.prefs[@"bubbleSize"] floatValue];
     self.bubbleOpacitySlider.value = [m.prefs[@"bubbleOpacity"] floatValue];
     self.hapticsSwitch.on = [m.prefs[@"haptics"] boolValue];
+    self.localLicenseBypassSwitch.on = [m.prefs[@"localLicenseBypass"] boolValue];
     self.apiRoutingSwitch.on = [m.prefs[@"apiRoutingEnabled"] boolValue];
     self.apiProfileControl.selectedSegmentIndex = [m.prefs[@"apiProfile"] integerValue];
     self.apiPreservePathSwitch.on = [m.prefs[@"apiPreservePath"] boolValue];
@@ -1249,6 +1366,18 @@ static void SCUIInstallBackendRouter(void) {
 }
 
 
+- (void)localLicenseBypassChanged:(UISwitch *)sender {
+    SCUIManager.shared.prefs[@"localLicenseBypass"] = @(sender.on);
+    SCUISave(SCUIManager.shared.prefs);
+
+    NSString *msg = sender.on
+        ? @"Modo local ativado. A rota /api/license/validate será respondida localmente para testes. Feche e abra a tela de key e valide novamente."
+        : @"Modo local desativado. A validação volta a usar a API configurada/original.";
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Bypass local" message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+
 - (void)apiRoutingChanged:(UISwitch *)sender {
     SCUIManager.shared.prefs[@"apiRoutingEnabled"] = @(sender.on);
     SCUISave(SCUIManager.shared.prefs);
@@ -1337,6 +1466,7 @@ static void SCUIInstallBackendRouter(void) {
     m.prefs[@"bubbleSize"] = @56.0;
     m.prefs[@"bubbleOpacity"] = @0.90;
     m.prefs[@"haptics"] = @YES;
+    m.prefs[@"localLicenseBypass"] = @NO;
     m.prefs[@"apiRoutingEnabled"] = @NO;
     m.prefs[@"apiProfile"] = @0;
     m.prefs[@"apiPreservePath"] = @YES;
@@ -1352,8 +1482,10 @@ static void SCUIInstallBackendRouter(void) {
 
 __attribute__((constructor))
 static void SCUIStart(void) {
+    SCUIInstallLocalLicenseProtocol();
+    SCUIInstallBackendRouter();
+
     dispatch_async(dispatch_get_main_queue(), ^{
-        SCUIInstallBackendRouter();
         SCUIManager *m = SCUIManager.shared;
         [m install];
 
