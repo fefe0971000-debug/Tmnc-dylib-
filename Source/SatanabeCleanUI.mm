@@ -5,11 +5,12 @@
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <objc/runtime.h>
 
-static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v4";
+static NSString * const SCUIPrefsKey = @"com.satanabe.cleanui.v5";
 static const void *SCUIOriginalHiddenKey = &SCUIOriginalHiddenKey;
 static const void *SCUIGlassOverlayKey = &SCUIGlassOverlayKey;
 static const void *SCUIOriginalBorderWidthKey = &SCUIOriginalBorderWidthKey;
 static const void *SCUIOriginalBorderColorKey = &SCUIOriginalBorderColorKey;
+static const void *SCUIOriginalCornerRadiusKey = &SCUIOriginalCornerRadiusKey;
 
 static NSMutableDictionary *SCUIPrefs(void) {
     NSDictionary *saved = [[NSUserDefaults standardUserDefaults] dictionaryForKey:SCUIPrefsKey];
@@ -21,7 +22,13 @@ static NSMutableDictionary *SCUIPrefs(void) {
         @"cardColor": @[@0.08,@0.08,@0.08,@0.58],
         @"accentColor": @[@1.0,@1.0,@1.0,@1.0],
         @"bubbleX": @0.92,
-        @"bubbleY": @0.28
+        @"bubbleY": @0.28,
+        @"bubbleSize": @56.0,
+        @"bubbleOpacity": @0.90,
+        @"cardRadius": @20.0,
+        @"borderWidth": @0.55,
+        @"haptics": @YES,
+        @"performanceMode": @NO
     } mutableCopy];
     if (saved) [p addEntriesFromDictionary:saved];
     return p;
@@ -118,9 +125,11 @@ static void SCUIRemoveGlassFromView(UIView *v) {
     if (bw) v.layer.borderWidth = bw.doubleValue;
     if ([bc isKindOfClass:UIColor.class]) v.layer.borderColor = ((UIColor *)bc).CGColor;
     else if (bc == NSNull.null) v.layer.borderColor = nil;
+    NSNumber *cr = objc_getAssociatedObject(v, SCUIOriginalCornerRadiusKey);
+    if (cr) v.layer.cornerRadius = cr.doubleValue;
 }
 
-static void SCUIApplyGlassToView(UIView *v, UIColor *cardColor, UIColor *accent, CGFloat intensity) {
+static void SCUIApplyGlassToView(UIView *v, UIColor *cardColor, UIColor *accent, CGFloat intensity, CGFloat radius, CGFloat borderWidth) {
     if (objc_getAssociatedObject(v, SCUIGlassOverlayKey)) return;
 
     objc_setAssociatedObject(v, SCUIOriginalBorderWidthKey, @(v.layer.borderWidth), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -137,7 +146,10 @@ static void SCUIApplyGlassToView(UIView *v, UIColor *cardColor, UIColor *accent,
     blur.frame = v.bounds;
     blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     blur.alpha = MAX(0.15, MIN(1.0, intensity));
-    blur.layer.cornerRadius = MAX(16.0, v.layer.cornerRadius);
+    if (!objc_getAssociatedObject(v, SCUIOriginalCornerRadiusKey)) {
+        objc_setAssociatedObject(v, SCUIOriginalCornerRadiusKey, @(v.layer.cornerRadius), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    blur.layer.cornerRadius = MAX(radius, v.layer.cornerRadius);
     blur.clipsToBounds = YES;
 
     UIView *tint = [[UIView alloc] initWithFrame:blur.bounds];
@@ -147,7 +159,8 @@ static void SCUIApplyGlassToView(UIView *v, UIColor *cardColor, UIColor *accent,
     [blur.contentView addSubview:tint];
 
     [v insertSubview:blur atIndex:0];
-    v.layer.borderWidth = 0.55;
+    v.layer.cornerRadius = MAX(radius, v.layer.cornerRadius);
+    v.layer.borderWidth = MAX(0.0, MIN(3.0, borderWidth));
     v.layer.borderColor = [accent colorWithAlphaComponent:0.34].CGColor;
     objc_setAssociatedObject(v, SCUIGlassOverlayKey, blur, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -194,6 +207,11 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 @property(nonatomic, strong) UISwitch *videoSwitch;
 @property(nonatomic, strong) UISegmentedControl *videoMode;
 @property(nonatomic, strong) UISlider *glassSlider;
+@property(nonatomic, strong) UISlider *radiusSlider;
+@property(nonatomic, strong) UISlider *borderSlider;
+@property(nonatomic, strong) UISlider *bubbleSizeSlider;
+@property(nonatomic, strong) UISlider *bubbleOpacitySlider;
+@property(nonatomic, strong) UISwitch *hapticsSwitch;
 @property(nonatomic) NSInteger colorTarget;
 - (void)refreshControls;
 @end
@@ -266,6 +284,8 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     BOOL videoEnabled = [self.prefs[@"videoEnabled"] boolValue];
     NSInteger videoMode = [self.prefs[@"videoMode"] integerValue];
     CGFloat intensity = [self.prefs[@"glassIntensity"] doubleValue];
+    CGFloat radius = [self.prefs[@"cardRadius"] doubleValue];
+    CGFloat borderWidth = [self.prefs[@"borderWidth"] doubleValue];
     UIColor *card = SCUIColorFromArray(self.prefs[@"cardColor"], [UIColor colorWithWhite:0.08 alpha:0.58]);
     UIColor *accent = SCUIColorFromArray(self.prefs[@"accentColor"], UIColor.whiteColor);
 
@@ -297,7 +317,7 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
                 if (v == overlay || [v isDescendantOfView:overlay]) return;
             }
             if (glass && SCUILooksLikeCard(v, window)) {
-                SCUIApplyGlassToView(v, card, accent, intensity);
+                SCUIApplyGlassToView(v, card, accent, intensity, radius, borderWidth);
             } else if (!glass) {
                 SCUIRemoveGlassFromView(v);
             }
@@ -344,10 +364,16 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 - (void)layoutSubviews {
     [super layoutSubviews];
     if (!self.bubble.superview) return;
-    CGFloat d = 56;
-    if (CGRectIsEmpty(self.bubble.frame)) {
-        CGFloat x = self.bounds.size.width - d - 14;
-        CGFloat y = self.safeAreaInsets.top + 150;
+    SCUIManager *m = SCUIManager.shared;
+    CGFloat d = MAX(42.0, MIN(82.0, [m.prefs[@"bubbleSize"] doubleValue]));
+    self.bubble.alpha = MAX(0.35, MIN(1.0, [m.prefs[@"bubbleOpacity"] doubleValue]));
+    if (CGRectIsEmpty(self.bubble.frame) || fabs(self.bubble.bounds.size.width - d) > 0.5) {
+        CGFloat nx = MAX(0.0, MIN(1.0, [m.prefs[@"bubbleX"] doubleValue]));
+        CGFloat ny = MAX(0.0, MIN(1.0, [m.prefs[@"bubbleY"] doubleValue]));
+        CGFloat x = 8 + nx * MAX(1.0, self.bounds.size.width - d - 16);
+        CGFloat minY = self.safeAreaInsets.top + 8;
+        CGFloat maxY = self.bounds.size.height - self.safeAreaInsets.bottom - d - 8;
+        CGFloat y = minY + ny * MAX(1.0, maxY - minY);
         self.bubble.frame = CGRectMake(x, y, d, d);
     }
     self.bubble.layer.cornerRadius = d/2;
@@ -437,6 +463,18 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     [self label:@"Intensidade do Glass" size:13];
     [self.stack addArrangedSubview:self.glassSlider];
 
+    [self label:@"Arredondamento dos cards" size:13];
+    self.radiusSlider = [UISlider new];
+    self.radiusSlider.minimumValue = 8; self.radiusSlider.maximumValue = 36;
+    [self.radiusSlider addTarget:self action:@selector(radiusChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.stack addArrangedSubview:self.radiusSlider];
+
+    [self label:@"Espessura das bordas" size:13];
+    self.borderSlider = [UISlider new];
+    self.borderSlider.minimumValue = 0; self.borderSlider.maximumValue = 2.0;
+    [self.borderSlider addTarget:self action:@selector(borderChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.stack addArrangedSubview:self.borderSlider];
+
     [self.stack addArrangedSubview:[self button:@"Cor dos cards" action:@selector(pickCardColor)]];
     [self.stack addArrangedSubview:[self button:@"Cor do destaque / bordas" action:@selector(pickAccentColor)]];
 
@@ -450,6 +488,24 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     [self.stack addArrangedSubview:self.videoMode];
 
     [self.stack addArrangedSubview:[self button:@"Escolher / trocar vídeo" action:@selector(chooseVideo)]];
+
+    [self label:@"Tamanho do botão flutuante" size:13];
+    self.bubbleSizeSlider = [UISlider new];
+    self.bubbleSizeSlider.minimumValue = 42; self.bubbleSizeSlider.maximumValue = 82;
+    [self.bubbleSizeSlider addTarget:self action:@selector(bubbleSizeChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.stack addArrangedSubview:self.bubbleSizeSlider];
+
+    [self label:@"Opacidade do botão flutuante" size:13];
+    self.bubbleOpacitySlider = [UISlider new];
+    self.bubbleOpacitySlider.minimumValue = 0.35; self.bubbleOpacitySlider.maximumValue = 1.0;
+    [self.bubbleOpacitySlider addTarget:self action:@selector(bubbleOpacityChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.stack addArrangedSubview:self.bubbleOpacitySlider];
+
+    self.hapticsSwitch = [UISwitch new];
+    [self.hapticsSwitch addTarget:self action:@selector(hapticsChanged:) forControlEvents:UIControlEventValueChanged];
+    [self rowWithTitle:@"Feedback tátil" control:self.hapticsSwitch];
+
+    [self.stack addArrangedSubview:[self button:@"Copiar configuração" action:@selector(copyConfiguration)]];
     [self.stack addArrangedSubview:[self button:@"Restaurar visual original" action:@selector(resetVisual)]];
 
     UIButton *close = [self button:@"Fechar" action:@selector(togglePanel)];
@@ -464,6 +520,11 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     self.videoSwitch.on = [m.prefs[@"videoEnabled"] boolValue];
     self.videoMode.selectedSegmentIndex = [m.prefs[@"videoMode"] integerValue];
     self.glassSlider.value = [m.prefs[@"glassIntensity"] floatValue];
+    self.radiusSlider.value = [m.prefs[@"cardRadius"] floatValue];
+    self.borderSlider.value = [m.prefs[@"borderWidth"] floatValue];
+    self.bubbleSizeSlider.value = [m.prefs[@"bubbleSize"] floatValue];
+    self.bubbleOpacitySlider.value = [m.prefs[@"bubbleOpacity"] floatValue];
+    self.hapticsSwitch.on = [m.prefs[@"haptics"] boolValue];
 
     UIColor *accent = SCUIColorFromArray(m.prefs[@"accentColor"], UIColor.whiteColor);
     self.bubble.layer.borderColor = [accent colorWithAlphaComponent:self.panel && !self.panel.hidden ? 1.0 : 0.72].CGColor;
@@ -471,6 +532,10 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 }
 
 - (void)togglePanel {
+    if ([SCUIManager.shared.prefs[@"haptics"] boolValue]) {
+        UIImpactFeedbackGenerator *g = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+        [g impactOccurred];
+    }
     if (!self.panel) { [self buildPanel]; self.panel.hidden = YES; }
     self.panel.hidden = !self.panel.hidden;
     [self refreshControls];
@@ -486,6 +551,41 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     c.y = MAX(self.safeAreaInsets.top+r+8, MIN(self.bounds.size.height-self.safeAreaInsets.bottom-r-8, c.y));
     self.bubble.center = c;
     [g setTranslation:CGPointZero inView:self];
+    if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
+        CGFloat d = self.bubble.bounds.size.width;
+        CGFloat nx = (self.bubble.frame.origin.x - 8) / MAX(1.0, self.bounds.size.width - d - 16);
+        CGFloat minY = self.safeAreaInsets.top + 8;
+        CGFloat maxY = self.bounds.size.height - self.safeAreaInsets.bottom - d - 8;
+        CGFloat ny = (self.bubble.frame.origin.y - minY) / MAX(1.0, maxY - minY);
+        SCUIManager.shared.prefs[@"bubbleX"] = @(MAX(0.0, MIN(1.0, nx)));
+        SCUIManager.shared.prefs[@"bubbleY"] = @(MAX(0.0, MIN(1.0, ny)));
+        SCUISave(SCUIManager.shared.prefs);
+    }
+}
+
+- (void)radiusChanged:(UISlider *)s {
+    SCUIManager.shared.prefs[@"cardRadius"] = @(s.value); SCUISave(SCUIManager.shared.prefs);
+    for (UIWindow *w in SCUIWindows()) SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
+    [SCUIManager.shared apply];
+}
+- (void)borderChanged:(UISlider *)s {
+    SCUIManager.shared.prefs[@"borderWidth"] = @(s.value); SCUISave(SCUIManager.shared.prefs);
+    for (UIWindow *w in SCUIWindows()) SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
+    [SCUIManager.shared apply];
+}
+- (void)bubbleSizeChanged:(UISlider *)s {
+    SCUIManager.shared.prefs[@"bubbleSize"] = @(s.value); SCUISave(SCUIManager.shared.prefs);
+    self.bubble.frame = CGRectZero; [self setNeedsLayout];
+}
+- (void)bubbleOpacityChanged:(UISlider *)s {
+    SCUIManager.shared.prefs[@"bubbleOpacity"] = @(s.value); SCUISave(SCUIManager.shared.prefs);
+    self.bubble.alpha = s.value;
+}
+- (void)hapticsChanged:(UISwitch *)s { SCUIManager.shared.prefs[@"haptics"] = @(s.on); SCUISave(SCUIManager.shared.prefs); }
+- (void)copyConfiguration {
+    NSError *e = nil;
+    NSData *d = [NSJSONSerialization dataWithJSONObject:SCUIManager.shared.prefs options:NSJSONWritingPrettyPrinted error:&e];
+    if (!e && d) UIPasteboard.generalPasteboard.string = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
 }
 
 - (void)glassChanged:(UISwitch *)s {
@@ -571,6 +671,12 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     m.prefs[@"glass"] = @NO;
     m.prefs[@"videoEnabled"] = @YES;
     m.prefs[@"videoMode"] = @0;
+    m.prefs[@"glassIntensity"] = @0.62;
+    m.prefs[@"cardRadius"] = @20.0;
+    m.prefs[@"borderWidth"] = @0.55;
+    m.prefs[@"bubbleSize"] = @56.0;
+    m.prefs[@"bubbleOpacity"] = @0.90;
+    m.prefs[@"haptics"] = @YES;
     SCUISave(m.prefs);
     for (UIWindow *w in SCUIWindows()) {
         SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
