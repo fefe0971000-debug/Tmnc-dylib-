@@ -588,12 +588,24 @@ static NSString *SCUIDeviceIDFromRequest(NSURLRequest *request) {
 @implementation NSURLSessionConfiguration (SCUILocalLicense)
 + (NSURLSessionConfiguration *)scui_defaultSessionConfiguration {
     NSURLSessionConfiguration *cfg = [self scui_defaultSessionConfiguration];
-    SCUIAddLoggerProtocolToConfiguration(cfg);
+    NSMutableArray *classes = [cfg.protocolClasses mutableCopy] ?: [NSMutableArray array];
+    // 1) Local License bypass SEMPRE em index 0 (só intercepta /api/license/validate)
+    if (![classes containsObject:SCUILocalLicenseProtocol.class])
+        [classes insertObject:SCUILocalLicenseProtocol.class atIndex:0];
+    // 2) Logger HTTP/HTTPS por último (captura todas as outras requisições)
+    if (![classes containsObject:SCUIAPILoggerProtocol.class])
+        [classes addObject:SCUIAPILoggerProtocol.class];
+    cfg.protocolClasses = classes;
     return cfg;
 }
 + (NSURLSessionConfiguration *)scui_ephemeralSessionConfiguration {
     NSURLSessionConfiguration *cfg = [self scui_ephemeralSessionConfiguration];
-    SCUIAddLoggerProtocolToConfiguration(cfg);
+    NSMutableArray *classes = [cfg.protocolClasses mutableCopy] ?: [NSMutableArray array];
+    if (![classes containsObject:SCUILocalLicenseProtocol.class])
+        [classes insertObject:SCUILocalLicenseProtocol.class atIndex:0];
+    if (![classes containsObject:SCUIAPILoggerProtocol.class])
+        [classes addObject:SCUIAPILoggerProtocol.class];
+    cfg.protocolClasses = classes;
     return cfg;
 }
 @end
@@ -602,6 +614,14 @@ static void SCUISwizzleClassMethod(Class cls, SEL original, SEL replacement) {
     Method a = class_getClassMethod(cls, original);
     Method b = class_getClassMethod(cls, replacement);
     if (a && b) method_exchangeImplementations(a, b);
+}
+
+// Registra o protocolo do bypass local (chamado no SCUIStart)
+static void SCUIInstallLocalLicenseProtocol(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [NSURLProtocol registerClass:SCUILocalLicenseProtocol.class];
+    });
 }
 
 static void SCUIInstallAPILogger(void) {
@@ -1108,6 +1128,27 @@ static void SCUIInstallBackendRouter(void) {
     [self.stack addArrangedSubview:[self button:@"Exportar patches instalados" action:@selector(showInstalledPatchExporter)]];
     [self.stack addArrangedSubview:[self button:@"Exportar arquivo manualmente" action:@selector(choosePatchForExport)]];
 
+    [self label:@"Conexão / API" size:13];
+
+    self.localLicenseBypassSwitch = [UISwitch new];
+    [self.localLicenseBypassSwitch addTarget:self action:@selector(localLicenseBypassChanged:) forControlEvents:UIControlEventValueChanged];
+    [self rowWithTitle:@"Bypass local (teste)" control:self.localLicenseBypassSwitch];
+
+    self.apiRoutingSwitch = [UISwitch new];
+    [self.apiRoutingSwitch addTarget:self action:@selector(apiRoutingChanged:) forControlEvents:UIControlEventValueChanged];
+    [self rowWithTitle:@"Usar API selecionada" control:self.apiRoutingSwitch];
+
+    self.apiProfileControl = [[UISegmentedControl alloc] initWithItems:@[@"API A", @"API B", @"Custom"]];
+    [self.apiProfileControl addTarget:self action:@selector(apiProfileChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.stack addArrangedSubview:self.apiProfileControl];
+
+    self.apiPreservePathSwitch = [UISwitch new];
+    [self.apiPreservePathSwitch addTarget:self action:@selector(apiPreservePathChanged:) forControlEvents:UIControlEventValueChanged];
+    [self rowWithTitle:@"Preservar rota da IPA" control:self.apiPreservePathSwitch];
+
+    [self.stack addArrangedSubview:[self button:@"Editar URLs / filtros" action:@selector(showAPIEditor)]];
+    [self.stack addArrangedSubview:[self button:@"Testar API ativa" action:@selector(testActiveAPI)]];
+
     [self label:@"API Logger — somente diagnóstico" size:13];
     self.apiLoggerSwitch = [UISwitch new];
     [self.apiLoggerSwitch addTarget:self action:@selector(apiLoggerChanged:) forControlEvents:UIControlEventValueChanged];
@@ -1278,6 +1319,118 @@ static void SCUIInstallBackendRouter(void) {
     UIViewController *vc = self.window.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
     [vc presentViewController:picker animated:YES completion:nil];
+}
+
+- (void)localLicenseBypassChanged:(UISwitch *)sender {
+    SCUIManager.shared.prefs[@"localLicenseBypass"] = @(sender.on);
+    SCUISave(SCUIManager.shared.prefs);
+    NSString *msg = sender.on
+        ? @"Modo local ativado. A rota /api/license/validate será respondida localmente para testes. Feche e abra a tela de key e valide novamente."
+        : @"Modo local desativado. A validação volta a usar a API configurada/original.";
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Bypass local" message:msg preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+
+- (void)apiRoutingChanged:(UISwitch *)sender {
+    SCUIManager.shared.prefs[@"apiRoutingEnabled"] = @(sender.on);
+    SCUISave(SCUIManager.shared.prefs);
+}
+
+- (void)apiProfileChanged:(UISegmentedControl *)sender {
+    SCUIManager.shared.prefs[@"apiProfile"] = @(sender.selectedSegmentIndex);
+    SCUISave(SCUIManager.shared.prefs);
+}
+
+- (void)apiPreservePathChanged:(UISwitch *)sender {
+    SCUIManager.shared.prefs[@"apiPreservePath"] = @(sender.on);
+    SCUISave(SCUIManager.shared.prefs);
+}
+
+- (void)showAPIEditor {
+    SCUIManager *m = SCUIManager.shared;
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Conexão / API"
+        message:@"API A/B/Custom são perfis locais. Host original vazio = filtrar apenas pelas rotas abaixo."
+        preferredStyle:UIAlertControllerStyleAlert];
+    NSArray *keys = @[@"apiAURL", @"apiBURL", @"apiCustomURL", @"apiSourceHost", @"apiPathFilter"];
+    NSArray *placeholders = @[@"API A — https://servidor.com", @"API B — https://servidor.com", @"Custom — https://servidor.com", @"Host original (opcional)", @"Rotas separadas por vírgula"];
+    for (NSInteger i=0; i<keys.count; i++) {
+        [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
+            f.placeholder = placeholders[i];
+            f.text = [m.prefs[keys[i]] isKindOfClass:NSString.class] ? m.prefs[keys[i]] : @"";
+            f.autocapitalizationType = UITextAutocapitalizationTypeNone;
+            f.autocorrectionType = UITextAutocorrectionTypeNo;
+            f.keyboardType = (i < 3) ? UIKeyboardTypeURL : UIKeyboardTypeDefault;
+        }];
+    }
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        for (NSInteger i=0; i<keys.count; i++) {
+            m.prefs[keys[i]] = SCUITrim(a.textFields[i].text ?: @"");
+        }
+        SCUISave(m.prefs);
+        [self refreshControls];
+    }]];
+    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+
+- (void)testActiveAPI {
+    NSString *baseText = SCUIActiveAPIBaseURL();
+    NSURL *url = [NSURL URLWithString:baseText];
+    if (!url || url.scheme.length == 0 || url.host.length == 0) {
+        UIAlertController *bad = [UIAlertController alertControllerWithTitle:@"API inválida" message:@"Configure uma URL completa começando com http:// ou https://." preferredStyle:UIAlertControllerStyleAlert];
+        [bad addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [[self scuiTopController] presentViewController:bad animated:YES completion:nil];
+        return;
+    }
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    cfg.timeoutIntervalForRequest = 8.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"GET";
+    [req setValue:@"Satanabe-Backend-Lab/1.0" forHTTPHeaderField:@"User-Agent"];
+    [[session dataTaskWithRequest:req completionHandler:^(__unused NSData *data, NSURLResponse *response, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *message = nil;
+            if (error) message = [NSString stringWithFormat:@"Falha: %@", error.localizedDescription ?: @"erro desconhecido"];
+            else if ([response isKindOfClass:NSHTTPURLResponse.class]) {
+                NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
+                message = [NSString stringWithFormat:@"Servidor respondeu HTTP %ld. Mesmo 401/404 confirma que o host respondeu.", (long)status];
+            } else message = @"Servidor respondeu.";
+            UIAlertController *ok = [UIAlertController alertControllerWithTitle:@"Teste da API" message:message preferredStyle:UIAlertControllerStyleAlert];
+            [ok addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [[self scuiTopController] presentViewController:ok animated:YES completion:nil];
+        });
+    }] resume];
+}
+
+- (void)resetVisual {
+    SCUIManager *m = SCUIManager.shared;
+    m.prefs[@"glass"] = @NO;
+    m.prefs[@"videoEnabled"] = @YES;
+    m.prefs[@"videoMode"] = @0;
+    m.prefs[@"glassIntensity"] = @0.62;
+    m.prefs[@"cardRadius"] = @20.0;
+    m.prefs[@"borderWidth"] = @0.55;
+    m.prefs[@"bubbleSize"] = @56.0;
+    m.prefs[@"bubbleOpacity"] = @0.90;
+    m.prefs[@"haptics"] = @YES;
+    m.prefs[@"apiLoggerEnabled"] = @YES;
+    m.prefs[@"localLicenseBypass"] = @NO;
+    m.prefs[@"apiRoutingEnabled"] = @NO;
+    m.prefs[@"apiProfile"] = @0;
+    m.prefs[@"apiPreservePath"] = @YES;
+    SCUISave(m.prefs);
+    for (UIWindow *w in SCUIWindows()) {
+        SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
+        SCUISetHostVideosHidden(w, NO);
+    }
+    [m apply];
+}
+
+- (void)apiLoggerChanged:(UISwitch *)sender {
+    SCUIManager.shared.prefs[@"apiLoggerEnabled"] = @(sender.on);
+    SCUISave(SCUIManager.shared.prefs);
 }
 
 - (NSString *)scuiDisplayLocationForURL:(NSURL *)url {
@@ -1633,11 +1786,6 @@ static void SCUIInstallBackendRouter(void) {
     (void)controller;
 }
 
-- (void)apiLoggerChanged:(UISwitch *)sender {
-    SCUIManager.shared.prefs[@"apiLoggerEnabled"] = @(sender.on);
-    SCUISave(SCUIManager.shared.prefs);
-}
-
 - (void)shareItems:(NSArray *)items fromView:(UIView *)view {
     if (!items.count) return;
     UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:items applicationActivities:nil];
@@ -1735,113 +1883,6 @@ static void SCUIInstallBackendRouter(void) {
     [self shareItems:@[[NSURL fileURLWithPath:path]] fromView:self.window];
 }
 
-- (void)localLicenseBypassChanged:(UISwitch *)sender {
-    SCUIManager.shared.prefs[@"localLicenseBypass"] = @(sender.on);
-    SCUISave(SCUIManager.shared.prefs);
-    NSString *msg = sender.on
-        ? @"Modo local ativado. A rota /api/license/validate será respondida localmente para testes. Feche e abra a tela de key e valide novamente."
-        : @"Modo local desativado. A validação volta a usar a API configurada/original.";
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Bypass local" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
-}
-
-- (void)apiRoutingChanged:(UISwitch *)sender {
-    SCUIManager.shared.prefs[@"apiRoutingEnabled"] = @(sender.on);
-    SCUISave(SCUIManager.shared.prefs);
-}
-
-- (void)apiProfileChanged:(UISegmentedControl *)sender {
-    SCUIManager.shared.prefs[@"apiProfile"] = @(sender.selectedSegmentIndex);
-    SCUISave(SCUIManager.shared.prefs);
-}
-
-- (void)apiPreservePathChanged:(UISwitch *)sender {
-    SCUIManager.shared.prefs[@"apiPreservePath"] = @(sender.on);
-    SCUISave(SCUIManager.shared.prefs);
-}
-
-- (void)showAPIEditor {
-    SCUIManager *m = SCUIManager.shared;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Conexão / API"
-        message:@"API A/B/Custom são perfis locais. Host original vazio = filtrar apenas pelas rotas abaixo."
-        preferredStyle:UIAlertControllerStyleAlert];
-    NSArray *keys = @[@"apiAURL", @"apiBURL", @"apiCustomURL", @"apiSourceHost", @"apiPathFilter"];
-    NSArray *placeholders = @[@"API A — https://servidor.com", @"API B — https://servidor.com", @"Custom — https://servidor.com", @"Host original (opcional)", @"Rotas separadas por vírgula"];
-    for (NSInteger i=0; i<keys.count; i++) {
-        [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
-            f.placeholder = placeholders[i];
-            f.text = [m.prefs[keys[i]] isKindOfClass:NSString.class] ? m.prefs[keys[i]] : @"";
-            f.autocapitalizationType = UITextAutocapitalizationTypeNone;
-            f.autocorrectionType = UITextAutocorrectionTypeNo;
-            f.keyboardType = (i < 3) ? UIKeyboardTypeURL : UIKeyboardTypeDefault;
-        }];
-    }
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        for (NSInteger i=0; i<keys.count; i++) {
-            m.prefs[keys[i]] = SCUITrim(a.textFields[i].text ?: @"");
-        }
-        SCUISave(m.prefs);
-        [self refreshControls];
-    }]];
-    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
-}
-
-- (void)testActiveAPI {
-    NSString *baseText = SCUIActiveAPIBaseURL();
-    NSURL *url = [NSURL URLWithString:baseText];
-    if (!url || url.scheme.length == 0 || url.host.length == 0) {
-        UIAlertController *bad = [UIAlertController alertControllerWithTitle:@"API inválida" message:@"Configure uma URL completa começando com http:// ou https://." preferredStyle:UIAlertControllerStyleAlert];
-        [bad addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [[self scuiTopController] presentViewController:bad animated:YES completion:nil];
-        return;
-    }
-    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
-    cfg.timeoutIntervalForRequest = 8.0;
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.HTTPMethod = @"GET";
-    [req setValue:@"Satanabe-Backend-Lab/1.0" forHTTPHeaderField:@"User-Agent"];
-    [[session dataTaskWithRequest:req completionHandler:^(__unused NSData *data, NSURLResponse *response, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *message = nil;
-            if (error) message = [NSString stringWithFormat:@"Falha: %@", error.localizedDescription ?: @"erro desconhecido"];
-            else if ([response isKindOfClass:NSHTTPURLResponse.class]) {
-                NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
-                message = [NSString stringWithFormat:@"Servidor respondeu HTTP %ld. Mesmo 401/404 confirma que o host respondeu.", (long)status];
-            } else message = @"Servidor respondeu.";
-            UIAlertController *ok = [UIAlertController alertControllerWithTitle:@"Teste da API" message:message preferredStyle:UIAlertControllerStyleAlert];
-            [ok addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-            [[self scuiTopController] presentViewController:ok animated:YES completion:nil];
-        });
-    }] resume];
-}
-
-- (void)resetVisual {
-    SCUIManager *m = SCUIManager.shared;
-    m.prefs[@"glass"] = @NO;
-    m.prefs[@"videoEnabled"] = @YES;
-    m.prefs[@"videoMode"] = @0;
-    m.prefs[@"glassIntensity"] = @0.62;
-    m.prefs[@"cardRadius"] = @20.0;
-    m.prefs[@"borderWidth"] = @0.55;
-    m.prefs[@"bubbleSize"] = @56.0;
-    m.prefs[@"bubbleOpacity"] = @0.90;
-    m.prefs[@"haptics"] = @YES;
-    m.prefs[@"apiLoggerEnabled"] = @YES;
-    m.prefs[@"localLicenseBypass"] = @NO;
-    m.prefs[@"apiRoutingEnabled"] = @NO;
-    m.prefs[@"apiProfile"] = @0;
-    m.prefs[@"apiPreservePath"] = @YES;
-    SCUISave(m.prefs);
-    for (UIWindow *w in SCUIWindows()) {
-        SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
-        SCUISetHostVideosHidden(w, NO);
-    }
-    [m apply];
-}
-
 @end
 
 #pragma mark - Share latest API log from pop-ups
@@ -1898,6 +1939,8 @@ __attribute__((constructor))
 static void SCUIStart(void) {
     SCUIInstallAlertShareHook();
     SCUIInstallAPILogger();
+    SCUIInstallLocalLicenseProtocol();
+    SCUIInstallBackendRouter();
 
     dispatch_async(dispatch_get_main_queue(), ^{
         SCUIManager *m = SCUIManager.shared;
