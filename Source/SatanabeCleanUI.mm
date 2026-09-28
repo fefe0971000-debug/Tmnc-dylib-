@@ -700,12 +700,16 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
         f.autocapitalizationType = UITextAutocapitalizationTypeNone;
         f.autocorrectionType = UITextAutocorrectionTypeNo;
     }];
-    __weak typeof(self) weakSelf = self;
+    __weak SCUIOverlay *weakSelf = self;
+    __weak UIAlertController *weakAlert = a;
     [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Gerar ZIP" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        NSString *folder = a.textFields.firstObject.text ?: @"";
-        NSString *name = a.textFields.count > 1 ? a.textFields[1].text : @"";
-        [weakSelf createPatchExportFromURL:src targetFolder:folder finalName:name];
+        SCUIOverlay *strongSelf = weakSelf;
+        UIAlertController *strongAlert = weakAlert;
+        if (!strongSelf || !strongAlert) return;
+        NSString *folder = strongAlert.textFields.firstObject.text ?: @"";
+        NSString *name = strongAlert.textFields.count > 1 ? strongAlert.textFields[1].text : @"";
+        [strongSelf createPatchExportFromURL:src targetFolder:folder finalName:name];
     }]];
     [[self scuiTopController] presentViewController:a animated:YES completion:nil];
 }
