@@ -35,3 +35,6 @@ Fluxo:
 4. O tweak gera `Satanabe-Patch-Export.zip` contendo a estrutura completa de pastas, o arquivo no destino informado e `PATCH_PATH.txt` com o caminho por escrito.
 
 A função exporta arquivos que o usuário seleciona/que o app tem permissão para acessar. Ela não tenta atravessar o sandbox de outros aplicativos.
+
+## v5.1.1 build fix
+Corrige o erro de compilação na rotina de exportação substituindo `typeof(self)` por tipos Objective-C explícitos e evitando o ciclo de retenção entre o alerta e o bloco da ação.
