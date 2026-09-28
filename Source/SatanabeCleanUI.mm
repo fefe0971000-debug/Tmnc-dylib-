@@ -1107,7 +1107,7 @@ static void SCUIInstallBackendRouter(void) {
     scroll.showsVerticalScrollIndicator = NO;
     [self.panel.contentView addSubview:scroll];
     [NSLayoutConstraint activateConstraints:@[
-        [scroll.topAnchor constraintEqualToAnchor:self.panel.contentView.topAnchor constant:14],
+        [scroll.topAnchor constraintEqualToAnchor:self.panel.contentView.topAnchor constant:56],
         [scroll.bottomAnchor constraintEqualToAnchor:self.panel.contentView.bottomAnchor constant:-14],
         [scroll.leadingAnchor constraintEqualToAnchor:self.panel.contentView.leadingAnchor constant:16],
         [scroll.trailingAnchor constraintEqualToAnchor:self.panel.contentView.trailingAnchor constant:-16]
@@ -1125,6 +1125,10 @@ static void SCUIInstallBackendRouter(void) {
         [self.stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
         [self.stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor]
     ]];
+
+    // O scroll era adicionado depois do botão e cobria sua área de toque.
+    // Reserve o cabeçalho e traga o X para a frente para que ele receba o toque.
+    [self.panel.contentView bringSubviewToFront:closeX];
 
     UILabel *title = [self label:@"SATANABE • VISUAL" size:20];
     title.font = [UIFont boldSystemFontOfSize:20];
@@ -1701,12 +1705,57 @@ static void SCUIInstallBackendRouter(void) {
             }
             for (id p in d[@"patches"]) {
                 SCUIPatchDLItem *it = [SCUIPatchDLItem fromDict:p];
-                if (it) [self.items addObject:it];
+                if (it && ![self isPatchAlreadyDownloaded:it]) [self.items addObject:it];
             }
             [self.tableView reloadData];
-            [self setStatus:[NSString stringWithFormat:@"%lu patches carregados.", (unsigned long)self.items.count] color:UIColor.systemGreenColor];
+            NSString *status = self.items.count
+                ? [NSString stringWithFormat:@"%lu patch(es) novos disponíveis.", (unsigned long)self.items.count]
+                : @"Todos os patches do catálogo já foram baixados.";
+            [self setStatus:status color:UIColor.systemGreenColor];
+            self.exportButton.enabled = [self hasDownloadedPatches];
         });
     }] resume];
+}
+
+- (NSURL *)patchesDirectory {
+    NSURL *docs = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+    return [docs URLByAppendingPathComponent:@"patches" isDirectory:YES];
+}
+
+- (BOOL)hasDownloadedPatches {
+    NSURL *dir = [self patchesDirectory];
+    NSArray<NSURL *> *files = [NSFileManager.defaultManager contentsOfDirectoryAtURL:dir
+        includingPropertiesForKeys:@[NSURLIsRegularFileKey]
+                           options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
+    for (NSURL *url in files) {
+        NSNumber *regular = nil;
+        [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+        if (regular.boolValue && [[url.pathExtension lowercaseString] isEqualToString:@"3105"]) return YES;
+    }
+    return NO;
+}
+
+- (BOOL)isPatchAlreadyDownloaded:(SCUIPatchDLItem *)item {
+    if (!item) return NO;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *dir = [self patchesDirectory];
+    NSArray<NSURL *> *files = [fm contentsOfDirectoryAtURL:dir
+        includingPropertiesForKeys:@[NSURLIsRegularFileKey]
+                           options:NSDirectoryEnumerationSkipsHiddenFiles error:nil];
+    NSMutableSet<NSString *> *wanted = [NSMutableSet set];
+    for (NSString *raw in @[item.fileName ?: @"", item.title ?: @""]) {
+        NSString *name = raw.lastPathComponent;
+        if (name.length) [wanted addObject:name.lowercaseString];
+    }
+    if (item.versionId) {
+        [wanted addObject:[NSString stringWithFormat:@"patch-%@.3105", item.versionId].lowercaseString];
+    }
+    for (NSURL *url in files) {
+        NSNumber *regular = nil;
+        [url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:nil];
+        if (regular.boolValue && [wanted containsObject:url.lastPathComponent.lowercaseString]) return YES;
+    }
+    return NO;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
@@ -1782,10 +1831,15 @@ static void SCUIInstallBackendRouter(void) {
         if (error.length) {
             [self.failedDownloads addObject:[NSString stringWithFormat:@"%@: %@", item.title ?: @"?", error]];
         }
+        if (!error.length) {
+            // O catálogo deve mostrar somente o que ainda não foi baixado.
+            [self.items removeObject:item];
+            [self.tableView reloadData];
+        }
         self.completedDownloads++;
         [self setStatus:[NSString stringWithFormat:@"%ld/%ld baixados...", (long)self.completedDownloads, (long)self.pendingDownloads] color:nil];
         if (self.completedDownloads >= self.pendingDownloads) {
-            self.exportButton.enabled = YES;
+            self.exportButton.enabled = [self hasDownloadedPatches];
             NSString *msg = [NSString stringWithFormat:@"%ld baixado(s) em Documents/patches/", (long)self.pendingDownloads - (long)self.failedDownloads.count];
             if (self.failedDownloads.count) msg = [msg stringByAppendingFormat:@"\n\nFalhas:\n%@", [self.failedDownloads componentsJoinedByString:@"\n"]];
             UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Downloads" message:msg preferredStyle:UIAlertControllerStyleAlert];
