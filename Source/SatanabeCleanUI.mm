@@ -216,6 +216,7 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 @property(nonatomic) NSInteger documentPickerPurpose; // 0=video, 1=export patch/payload
 @property(nonatomic, strong) NSURL *pendingExportSourceURL;
 - (void)refreshControls;
+- (void)showInstalledPatchExporter;
 @end
 
 @implementation SCUIManager
@@ -327,6 +328,95 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     }
 
     for (SCUIOverlay *o in self.overlays) [o refreshControls];
+}
+
+@end
+
+
+#pragma mark - Local .3105 exporter
+
+@interface SCUIPatchExportController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property(nonatomic, strong) NSArray<NSURL *> *items;
+@property(nonatomic, strong) NSMutableSet<NSNumber *> *selectedRows;
+@property(nonatomic, strong) UITableView *tableView;
+@property(nonatomic, copy) void (^exportHandler)(NSArray<NSURL *> *urls);
+@end
+
+@implementation SCUIPatchExportController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Patches .3105";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.selectedRows = [NSMutableSet set];
+
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(closePressed)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"Exportar" style:UIBarButtonItemStyleDone target:self action:@selector(exportPressed)];
+    self.navigationItem.rightBarButtonItem.enabled = NO;
+
+    UITableView *tv = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
+    tv.translatesAutoresizingMaskIntoConstraints = NO;
+    tv.dataSource = self;
+    tv.delegate = self;
+    tv.allowsMultipleSelection = YES;
+    [self.view addSubview:tv];
+    self.tableView = tv;
+    [NSLayoutConstraint activateConstraints:@[
+        [tv.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [tv.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [tv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [tv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
+    ]];
+}
+
+- (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)exportPressed {
+    NSMutableArray<NSURL *> *chosen = [NSMutableArray array];
+    NSArray<NSNumber *> *ordered = [[self.selectedRows allObjects] sortedArrayUsingSelector:@selector(compare:)];
+    for (NSNumber *n in ordered) {
+        NSInteger i = n.integerValue;
+        if (i >= 0 && i < (NSInteger)self.items.count) [chosen addObject:self.items[(NSUInteger)i]];
+    }
+    if (!chosen.count) return;
+    void (^handler)(NSArray<NSURL *> *) = self.exportHandler;
+    [self dismissViewControllerAnimated:YES completion:^{ if (handler) handler(chosen); }];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    (void)tableView; (void)section; return (NSInteger)self.items.count;
+}
+
+- (NSString *)displayLocationForURL:(NSURL *)url {
+    NSString *path = url.path ?: @"";
+    NSString *bundle = NSBundle.mainBundle.bundlePath ?: @"";
+    NSString *home = NSHomeDirectory() ?: @"";
+    if (bundle.length && [path hasPrefix:bundle]) return [@"IPA/" stringByAppendingString:[path substringFromIndex:bundle.length]];
+    if (home.length && [path hasPrefix:home]) return [@"Sandbox/" stringByAppendingString:[path substringFromIndex:home.length]];
+    return path;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *rid = @"SCUIPatchCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
+    NSURL *u = self.items[(NSUInteger)indexPath.row];
+    cell.textLabel.text = u.lastPathComponent ?: @"patch.3105";
+    cell.detailTextLabel.text = [self displayLocationForURL:u];
+    cell.detailTextLabel.numberOfLines = 2;
+    cell.accessoryType = [self.selectedRows containsObject:@(indexPath.row)] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSNumber *key = @(indexPath.row);
+    if ([self.selectedRows containsObject:key]) [self.selectedRows removeObject:key];
+    else [self.selectedRows addObject:key];
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    self.navigationItem.rightBarButtonItem.enabled = self.selectedRows.count > 0;
 }
 
 @end
@@ -451,7 +541,7 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
 
     UILabel *title = [self label:@"SATANABE • VISUAL" size:20];
     title.font = [UIFont boldSystemFontOfSize:20];
-    UILabel *sub = [self label:@"Apenas aparência. Não altera keys, Supabase ou patches." size:11];
+    UILabel *sub = [self label:@"Visual + ferramentas locais. Não altera keys nem Supabase." size:11];
     sub.textColor = [UIColor colorWithWhite:1 alpha:0.58];
 
     self.glassSwitch = [UISwitch new];
@@ -492,7 +582,8 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     [self.stack addArrangedSubview:[self button:@"Escolher / trocar vídeo" action:@selector(chooseVideo)]];
 
     [self label:@"Ferramentas de patch" size:13];
-    [self.stack addArrangedSubview:[self button:@"Exportar .3105 / arquivo + caminho" action:@selector(choosePatchForExport)]];
+    [self.stack addArrangedSubview:[self button:@"Exportar patches .3105 da IPA" action:@selector(showInstalledPatchExporter)]];
+    [self.stack addArrangedSubview:[self button:@"Exportar arquivo manualmente" action:@selector(choosePatchForExport)]];
 
     [self label:@"Tamanho do botão flutuante" size:13];
     self.bubbleSizeSlider = [UISlider new];
@@ -651,6 +742,69 @@ static void SCUIWalkViews(UIView *v, void (^block)(UIView *)) {
     UIViewController *vc = self.window.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
     [vc presentViewController:picker animated:YES completion:nil];
+}
+
+
+- (NSArray<NSURL *> *)scuiDiscover3105Files {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSMutableArray<NSURL *> *roots = [NSMutableArray array];
+    NSURL *bundleURL = NSBundle.mainBundle.bundleURL;
+    if (bundleURL) [roots addObject:bundleURL];
+
+    NSString *home = NSHomeDirectory();
+    if (home.length) {
+        for (NSString *sub in @[@"Documents", @"Library", @"tmp"]) {
+            NSURL *u = [NSURL fileURLWithPath:[home stringByAppendingPathComponent:sub] isDirectory:YES];
+            BOOL isDir = NO;
+            if ([fm fileExistsAtPath:u.path isDirectory:&isDir] && isDir) [roots addObject:u];
+        }
+    }
+
+    NSMutableArray<NSURL *> *found = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    NSArray *keys = @[NSURLIsRegularFileKey, NSURLNameKey];
+    for (NSURL *root in roots) {
+        NSDirectoryEnumerator *en = [fm enumeratorAtURL:root
+            includingPropertiesForKeys:keys
+            options:(NSDirectoryEnumerationSkipsHiddenFiles | NSDirectoryEnumerationSkipsPackageDescendants)
+            errorHandler:^BOOL(NSURL *url, NSError *error) { (void)url; (void)error; return YES; }];
+        for (NSURL *u in en) {
+            if (![[u.pathExtension lowercaseString] isEqualToString:@"3105"]) continue;
+            NSString *canonical = u.URLByStandardizingPath.path ?: u.path;
+            if (!canonical.length || [seen containsObject:canonical]) continue;
+            [seen addObject:canonical];
+            [found addObject:u];
+        }
+    }
+    [found sortUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
+        return [(a.lastPathComponent ?: @"") localizedCaseInsensitiveCompare:(b.lastPathComponent ?: @"")];
+    }];
+    return found;
+}
+
+- (void)showInstalledPatchExporter {
+    NSArray<NSURL *> *patches = [self scuiDiscover3105Files];
+    if (!patches.count) {
+        [self showExportError:@"Nenhum arquivo .3105 foi encontrado dentro da IPA ou no sandbox do Satanabe External. Se um patch só existe no Supabase e ainda não foi baixado pelo app, ele não existe localmente para a dylib exportar."];
+        return;
+    }
+
+    SCUIPatchExportController *list = [SCUIPatchExportController new];
+    list.items = patches;
+    __weak SCUIOverlay *weakOverlay = self;
+    list.exportHandler = ^(NSArray<NSURL *> *urls) {
+        SCUIOverlay *overlay = weakOverlay;
+        if (!overlay || !urls.count) return;
+        UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:urls applicationActivities:nil];
+        if (share.popoverPresentationController) {
+            share.popoverPresentationController.sourceView = overlay.bubble;
+            share.popoverPresentationController.sourceRect = overlay.bubble.bounds;
+        }
+        [[overlay scuiTopController] presentViewController:share animated:YES completion:nil];
+    };
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:list];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [[self scuiTopController] presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)choosePatchForExport {
