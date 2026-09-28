@@ -1,5 +1,4 @@
-name: Build SatanabeCleanUI v5.5
-
+name: Build SatanabeCleanUI v5.8 API Logger
 on:
   workflow_dispatch:
   push:
@@ -13,25 +12,21 @@ jobs:
   build:
     runs-on: macos-14
     timeout-minutes: 20
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Validate files
+      - name: Validate
         run: |
           set -euxo pipefail
           test -f Source/SatanabeCleanUI.mm
           test -f Makefile
-          find . -maxdepth 3 -type f | sort
 
       - name: Toolchain
         run: |
-          set -euxo pipefail
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Build and diagnose
+      - name: Build
         run: |
           set -euxo pipefail
           make clean
@@ -43,14 +38,13 @@ jobs:
           mkdir -p dist
           cp build/SatanabeCleanUI.dylib dist/
           shasum -a 256 build/SatanabeCleanUI.dylib > dist/SHA256.txt
-          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.5.zip
+          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.8.zip
 
-      - name: Upload dylib
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: SatanabeCleanUI-v5.5
+          name: SatanabeCleanUI-v5.8
           path: |
             build/SatanabeCleanUI.dylib
-            SatanabeCleanUI-v5.5.zip
+            SatanabeCleanUI-v5.8.zip
           if-no-files-found: error
           retention-days: 30
