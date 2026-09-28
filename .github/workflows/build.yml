@@ -1,4 +1,4 @@
-name: Build SatanabeCleanUI v5.8 API Logger
+name: Build SatanabeCleanUI v5.8.1 API Logger Build Fix
 on:
   workflow_dispatch:
   push:
@@ -38,13 +38,13 @@ jobs:
           mkdir -p dist
           cp build/SatanabeCleanUI.dylib dist/
           shasum -a 256 build/SatanabeCleanUI.dylib > dist/SHA256.txt
-          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.8.zip
+          ditto -c -k --sequesterRsrc --keepParent dist SatanabeCleanUI-v5.8.1.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SatanabeCleanUI-v5.8
+          name: SatanabeCleanUI-v5.8.1
           path: |
             build/SatanabeCleanUI.dylib
-            SatanabeCleanUI-v5.8.zip
+            SatanabeCleanUI-v5.8.1.zip
           if-no-files-found: error
           retention-days: 30
