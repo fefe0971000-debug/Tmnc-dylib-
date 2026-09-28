@@ -399,7 +399,10 @@ static NSString *SCUIValidationResultFromData(NSData *data, NSInteger statusCode
         id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
         NSNumber *valid = SCUIFindBoolForKeys(json, [NSSet setWithArray:@[@"valid", @"success", @"ok", @"authorized", @"active"]]);
         if (valid) return valid.boolValue ? @"VALID" : @"INVALID";
-        NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].lowercaseString;
+        NSString *text nil = [[NSString alloc;
+] initWithData:}
+
+data encoding:NSstaticUTF8String NSEncoding].lowercaseString;
         if ([text containsString:@"invalid"] || [text containsString:@"inválid"] ||
             [text containsString:@"expired"] || [text containsString:@"expirad"] ||
             [text containsString:@"revoked"] || [text containsString:@"revogad"]) return @"INVALID";
@@ -407,10 +410,7 @@ static NSString *SCUIValidationResultFromData(NSData *data, NSInteger statusCode
             [text containsString:@"authorized"] || [text containsString:@"success"]) return @"VALID";
     }
     if (statusCode == 401 || statusCode == 403 || statusCode == 422) return @"INVALID";
-    return nil;
-}
-
-static NSDictionary *SCUILatestAPILog(void) {
+    returnDictionary *SCUILatestAPILog(void) {
     return SCUIReadAPILogs().lastObject;
 }
 
@@ -522,7 +522,7 @@ static void SCUIAddLoggerProtocolToConfiguration(NSURLSessionConfiguration *cfg)
     if (![classes containsObject:SCUIAPILoggerProtocol.class]) [classes addObject:SCUIAPILoggerProtocol.class];
     cfg.protocolClasses = classes;
 }
-
+    
 #pragma mark - Local License Test Mode
 
 static BOOL SCUILocalLicenseBypassEnabled(void) {
@@ -589,10 +589,8 @@ static NSString *SCUIDeviceIDFromRequest(NSURLRequest *request) {
 + (NSURLSessionConfiguration *)scui_defaultSessionConfiguration {
     NSURLSessionConfiguration *cfg = [self scui_defaultSessionConfiguration];
     NSMutableArray *classes = [cfg.protocolClasses mutableCopy] ?: [NSMutableArray array];
-    // 1) Local License bypass SEMPRE em index 0 (só intercepta /api/license/validate)
     if (![classes containsObject:SCUILocalLicenseProtocol.class])
         [classes insertObject:SCUILocalLicenseProtocol.class atIndex:0];
-    // 2) Logger HTTP/HTTPS por último (captura todas as outras requisições)
     if (![classes containsObject:SCUIAPILoggerProtocol.class])
         [classes addObject:SCUIAPILoggerProtocol.class];
     cfg.protocolClasses = classes;
@@ -616,7 +614,6 @@ static void SCUISwizzleClassMethod(Class cls, SEL original, SEL replacement) {
     if (a && b) method_exchangeImplementations(a, b);
 }
 
-// Registra o protocolo do bypass local (chamado no SCUIStart)
 static void SCUIInstallLocalLicenseProtocol(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -728,8 +725,9 @@ static void SCUIInstallBackendRouter(void) {
         SCUISwizzle(cls, @selector(uploadTaskWithRequest:fromData:completionHandler:), @selector(scui_uploadTaskWithRequest:fromData:completionHandler:));
     });
 }
-
+    
 @class SCUIOverlay;
+@class SCUIPatchDownloaderVC;
 
 @interface SCUIManager : NSObject
 @property(nonatomic, strong) NSMutableDictionary *prefs;
@@ -749,34 +747,100 @@ static void SCUIInstallBackendRouter(void) {
 @property(nonatomic, strong) UIButton *bubble;
 @property(nonatomic, strong) UIVisualEffectView *panel;
 @property(nonatomic, strong) UIStackView *stack;
-@property(nonatomic, strong) UISwitch *glassSwitch;
-@property(nonatomic, strong) UISwitch *videoSwitch;
-@property(nonatomic, strong) UISegmentedControl *videoMode;
-@property(nonatomic, strong) UISlider *glassSlider;
-@property(nonatomic, strong) UISlider *radiusSlider;
-@property(nonatomic, strong) UISlider *borderSlider;
 @property(nonatomic, strong) UISlider *bubbleSizeSlider;
 @property(nonatomic, strong) UISlider *bubbleOpacitySlider;
 @property(nonatomic, strong) UISwitch *hapticsSwitch;
-@property(nonatomic, strong) UISwitch *apiRoutingSwitch;
-@property(nonatomic, strong) UISegmentedControl *apiProfileControl;
-@property(nonatomic, strong) UISwitch *apiPreservePathSwitch;
 @property(nonatomic, strong) UISwitch *localLicenseBypassSwitch;
-@property(nonatomic, strong) UISwitch *apiLoggerSwitch;
-@property(nonatomic) NSInteger colorTarget;
-@property(nonatomic) NSInteger documentPickerPurpose;
-@property(nonatomic, strong) NSURL *pendingExportSourceURL;
 - (void)refreshControls;
 - (void)showInstalledPatchExporter;
-- (void)showAPIEditor;
-- (void)testActiveAPI;
-- (void)localLicenseBypassChanged:(UISwitch *)sender;
-- (void)apiLoggerChanged:(UISwitch *)sender;
 - (void)showAPILogs;
 - (void)clearAPILogs;
 - (void)shareAllAPILogs;
-- (void)scanStaticAPIURLs;
-- (void)shareLogDictionary:(NSDictionary *)log;
+- (void)localLicenseBypassChanged:(UISwitch *)sender;
+- (void)scui_patch_openDownloader;
+@end
+
+@interface SCUIPatchCandidate : NSObject
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic, copy) NSString *subtitle;
+@property(nonatomic, strong) NSURL *url;
+@property(nonatomic) NSInteger kind;
+@end
+@implementation SCUIPatchCandidate @end
+
+@interface SCUIPatchExportController : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property(nonatomic, strong) NSArray<SCUIPatchCandidate *> *items;
+@property(nonatomic, strong) NSMutableSet<NSNumber *> *selectedRows;
+@property(nonatomic, strong) UITableView *tableView;
+@property(nonatomic, copy) void (^exportHandler)(NSArray<SCUIPatchCandidate *> *items);
+@end
+
+@implementation SCUIPatchExportController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Patches instalados";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.selectedRows = [NSMutableSet set];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(closePressed)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"Exportar" style:UIBarButtonItemStyleDone target:self action:@selector(exportPressed)];
+    self.navigationItem.rightBarButtonItem.enabled = NO;
+    UITableView *tv = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
+    tv.translatesAutoresizingMaskIntoConstraints = NO;
+    tv.dataSource = self;
+    tv.delegate = self;
+    tv.allowsMultipleSelection = YES;
+    [self.view addSubview:tv];
+    self.tableView = tv;
+    [NSLayoutConstraint activateConstraints:@[
+        [tv.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [tv.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [tv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [tv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
+    ]];
+}
+
+- (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)exportPressed {
+    NSMutableArray<SCUIPatchCandidate *> *chosen = [NSMutableArray array];
+    NSArray<NSNumber *> *ordered = [[self.selectedRows allObjects] sortedArrayUsingSelector:@selector(compare:)];
+    for (NSNumber *n in ordered) {
+        NSInteger i = n.integerValue;
+        if (i >= 0 && i < (NSInteger)self.items.count) [chosen addObject:self.items[(NSUInteger)i]];
+    }
+    if (!chosen.count) return;
+    void (^handler)(NSArray<SCUIPatchCandidate *> *) = self.exportHandler;
+    [self dismissViewControllerAnimated:YES completion:^{ if (handler) handler(chosen); }];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    (void)tableView; (void)section; return (NSInteger)self.items.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *rid = @"SCUIPatchCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
+    SCUIPatchCandidate *item = self.items[(NSUInteger)indexPath.row];
+    cell.textLabel.text = item.title.length ? item.title : @"Patch";
+    cell.detailTextLabel.text = item.subtitle ?: @"";
+    cell.detailTextLabel.numberOfLines = 2;
+    cell.accessoryType = [self.selectedRows containsObject:@(indexPath.row)] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    NSNumber *key = @(indexPath.row);
+    if ([self.selectedRows containsObject:key]) [self.selectedRows removeObject:key];
+    else [self.selectedRows addObject:key];
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    self.navigationItem.rightBarButtonItem.enabled = self.selectedRows.count > 0;
+}
+
 @end
 
 @implementation SCUIManager
@@ -880,92 +944,7 @@ static void SCUIInstallBackendRouter(void) {
 }
 
 @end
-
-#pragma mark - Local 3105 / PatchProject exporter
-
-@interface SCUIPatchCandidate : NSObject
-@property(nonatomic, copy) NSString *title;
-@property(nonatomic, copy) NSString *subtitle;
-@property(nonatomic, strong) NSURL *url;
-@property(nonatomic) NSInteger kind;
-@end
-@implementation SCUIPatchCandidate @end
-
-@interface SCUIPatchExportController : UIViewController <UITableViewDataSource, UITableViewDelegate>
-@property(nonatomic, strong) NSArray<SCUIPatchCandidate *> *items;
-@property(nonatomic, strong) NSMutableSet<NSNumber *> *selectedRows;
-@property(nonatomic, strong) UITableView *tableView;
-@property(nonatomic, copy) void (^exportHandler)(NSArray<SCUIPatchCandidate *> *items);
-@end
-
-@implementation SCUIPatchExportController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"Patches instalados";
-    self.view.backgroundColor = UIColor.systemBackgroundColor;
-    self.selectedRows = [NSMutableSet set];
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(closePressed)];
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"Exportar" style:UIBarButtonItemStyleDone target:self action:@selector(exportPressed)];
-    self.navigationItem.rightBarButtonItem.enabled = NO;
-    UITableView *tv = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
-    tv.translatesAutoresizingMaskIntoConstraints = NO;
-    tv.dataSource = self;
-    tv.delegate = self;
-    tv.allowsMultipleSelection = YES;
-    [self.view addSubview:tv];
-    self.tableView = tv;
-    [NSLayoutConstraint activateConstraints:@[
-        [tv.topAnchor constraintEqualToAnchor:self.view.topAnchor],
-        [tv.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
-        [tv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [tv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
-    ]];
-}
-
-- (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
-
-- (void)exportPressed {
-    NSMutableArray<SCUIPatchCandidate *> *chosen = [NSMutableArray array];
-    NSArray<NSNumber *> *ordered = [[self.selectedRows allObjects] sortedArrayUsingSelector:@selector(compare:)];
-    for (NSNumber *n in ordered) {
-        NSInteger i = n.integerValue;
-        if (i >= 0 && i < (NSInteger)self.items.count) [chosen addObject:self.items[(NSUInteger)i]];
-    }
-    if (!chosen.count) return;
-    void (^handler)(NSArray<SCUIPatchCandidate *> *) = self.exportHandler;
-    [self dismissViewControllerAnimated:YES completion:^{ if (handler) handler(chosen); }];
-}
-
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    (void)tableView; (void)section; return (NSInteger)self.items.count;
-}
-
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *rid = @"SCUIPatchCell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
-    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
-    SCUIPatchCandidate *item = self.items[(NSUInteger)indexPath.row];
-    cell.textLabel.text = item.title.length ? item.title : @"Patch";
-    cell.detailTextLabel.text = item.subtitle ?: @"";
-    cell.detailTextLabel.numberOfLines = 2;
-    cell.accessoryType = [self.selectedRows containsObject:@(indexPath.row)] ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-    return cell;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSNumber *key = @(indexPath.row);
-    if ([self.selectedRows containsObject:key]) [self.selectedRows removeObject:key];
-    else [self.selectedRows addObject:key];
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
-    self.navigationItem.rightBarButtonItem.enabled = self.selectedRows.count > 0;
-}
-
-@end
-
+    
 @implementation SCUIOverlay
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -1065,9 +1044,33 @@ static void SCUIInstallBackendRouter(void) {
     CGFloat h = MIN(590, self.bounds.size.height - self.safeAreaInsets.top - self.safeAreaInsets.bottom - 50);
     self.panel.frame = CGRectMake((self.bounds.size.width-w)/2, self.safeAreaInsets.top + 18, w, h);
 
-    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectInset(self.panel.bounds, 16, 16)];
-    scroll.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    UIButton *closeX = [UIButton buttonWithType:UIButtonTypeSystem];
+    [closeX setTitle:@"✕" forState:UIControlStateNormal];
+    [closeX setTitleColor:[UIColor colorWithWhite:1 alpha:0.90] forState:UIControlStateNormal];
+    closeX.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBold];
+    closeX.backgroundColor = [UIColor colorWithWhite:1 alpha:0.14];
+    closeX.layer.cornerRadius = 14;
+    closeX.translatesAutoresizingMaskIntoConstraints = NO;
+    [closeX addTarget:self action:@selector(togglePanel) forControlEvents:UIControlEventTouchUpInside];
+    [self.panel.contentView addSubview:closeX];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [closeX.topAnchor constraintEqualToAnchor:self.panel.contentView.topAnchor constant:14],
+        [closeX.trailingAnchor constraintEqualToAnchor:self.panel.contentView.trailingAnchor constant:-14],
+        [closeX.widthAnchor constraintEqualToConstant:28],
+        [closeX.heightAnchor constraintEqualToConstant:28]
+    ]];
+
+    UIScrollView *scroll = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.showsVerticalScrollIndicator = NO;
     [self.panel.contentView addSubview:scroll];
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.topAnchor constraintEqualToAnchor:self.panel.contentView.topAnchor constant:14],
+        [scroll.bottomAnchor constraintEqualToAnchor:self.panel.contentView.bottomAnchor constant:-14],
+        [scroll.leadingAnchor constraintEqualToAnchor:self.panel.contentView.leadingAnchor constant:16],
+        [scroll.trailingAnchor constraintEqualToAnchor:self.panel.contentView.trailingAnchor constant:-16]
+    ]];
 
     self.stack = [UIStackView new];
     self.stack.axis = UILayoutConstraintAxisVertical;
@@ -1084,88 +1087,31 @@ static void SCUIInstallBackendRouter(void) {
 
     UILabel *title = [self label:@"SATANABE • VISUAL" size:20];
     title.font = [UIFont boldSystemFontOfSize:20];
-    UILabel *sub = [self label:@"Visual + patches + conexão de teste." size:11];
+    UILabel *sub = [self label:@"Patches + diagnóstico." size:11];
     sub.textColor = [UIColor colorWithWhite:1 alpha:0.58];
 
-    self.glassSwitch = [UISwitch new];
-    [self.glassSwitch addTarget:self action:@selector(glassChanged:) forControlEvents:UIControlEventValueChanged];
-    [self rowWithTitle:@"Liquid Glass" control:self.glassSwitch];
-
-    self.glassSlider = [UISlider new];
-    self.glassSlider.minimumValue = 0.15;
-    self.glassSlider.maximumValue = 1.0;
-    [self.glassSlider addTarget:self action:@selector(glassIntensityChanged:) forControlEvents:UIControlEventValueChanged];
-    [self label:@"Intensidade do Glass" size:13];
-    [self.stack addArrangedSubview:self.glassSlider];
-
-    [self label:@"Arredondamento dos cards" size:13];
-    self.radiusSlider = [UISlider new];
-    self.radiusSlider.minimumValue = 8; self.radiusSlider.maximumValue = 36;
-    [self.radiusSlider addTarget:self action:@selector(radiusChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.stack addArrangedSubview:self.radiusSlider];
-
-    [self label:@"Espessura das bordas" size:13];
-    self.borderSlider = [UISlider new];
-    self.borderSlider.minimumValue = 0; self.borderSlider.maximumValue = 2.0;
-    [self.borderSlider addTarget:self action:@selector(borderChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.stack addArrangedSubview:self.borderSlider];
-
-    [self.stack addArrangedSubview:[self button:@"Cor dos cards" action:@selector(pickCardColor)]];
-    [self.stack addArrangedSubview:[self button:@"Cor do destaque / bordas" action:@selector(pickAccentColor)]];
-
-    self.videoSwitch = [UISwitch new];
-    [self.videoSwitch addTarget:self action:@selector(videoChanged:) forControlEvents:UIControlEventValueChanged];
-    [self rowWithTitle:@"Vídeo de fundo" control:self.videoSwitch];
-
-    [self label:@"Fonte do vídeo" size:13];
-    self.videoMode = [[UISegmentedControl alloc] initWithItems:@[@"Original", @"Personalizado"]];
-    [self.videoMode addTarget:self action:@selector(videoModeChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.stack addArrangedSubview:self.videoMode];
-
-    [self.stack addArrangedSubview:[self button:@"Escolher / trocar vídeo" action:@selector(chooseVideo)]];
-
-    [self label:@"Ferramentas de patch" size:13];
+    [self label:@"Patches" size:13];
+    [self.stack addArrangedSubview:[self button:@"Baixar patches da API" action:@selector(scui_patch_openDownloader)]];
     [self.stack addArrangedSubview:[self button:@"Exportar patches instalados" action:@selector(showInstalledPatchExporter)]];
-    [self.stack addArrangedSubview:[self button:@"Exportar arquivo manualmente" action:@selector(choosePatchForExport)]];
 
-    [self label:@"Conexão / API" size:13];
-
+    [self label:@"Conexão" size:13];
     self.localLicenseBypassSwitch = [UISwitch new];
     [self.localLicenseBypassSwitch addTarget:self action:@selector(localLicenseBypassChanged:) forControlEvents:UIControlEventValueChanged];
     [self rowWithTitle:@"Bypass local (teste)" control:self.localLicenseBypassSwitch];
 
-    self.apiRoutingSwitch = [UISwitch new];
-    [self.apiRoutingSwitch addTarget:self action:@selector(apiRoutingChanged:) forControlEvents:UIControlEventValueChanged];
-    [self rowWithTitle:@"Usar API selecionada" control:self.apiRoutingSwitch];
-
-    self.apiProfileControl = [[UISegmentedControl alloc] initWithItems:@[@"API A", @"API B", @"Custom"]];
-    [self.apiProfileControl addTarget:self action:@selector(apiProfileChanged:) forControlEvents:UIControlEventValueChanged];
-    [self.stack addArrangedSubview:self.apiProfileControl];
-
-    self.apiPreservePathSwitch = [UISwitch new];
-    [self.apiPreservePathSwitch addTarget:self action:@selector(apiPreservePathChanged:) forControlEvents:UIControlEventValueChanged];
-    [self rowWithTitle:@"Preservar rota da IPA" control:self.apiPreservePathSwitch];
-
-    [self.stack addArrangedSubview:[self button:@"Editar URLs / filtros" action:@selector(showAPIEditor)]];
-    [self.stack addArrangedSubview:[self button:@"Testar API ativa" action:@selector(testActiveAPI)]];
-
-    [self label:@"API Logger — somente diagnóstico" size:13];
-    self.apiLoggerSwitch = [UISwitch new];
-    [self.apiLoggerSwitch addTarget:self action:@selector(apiLoggerChanged:) forControlEvents:UIControlEventValueChanged];
-    [self rowWithTitle:@"Registrar HTTP/HTTPS" control:self.apiLoggerSwitch];
-    [self label:@"Registra URL, método, status e correlação de key/resultado. Não altera requisições." size:11];
+    [self label:@"API Logger — diagnóstico" size:13];
     [self.stack addArrangedSubview:[self button:@"Ver logs da API" action:@selector(showAPILogs)]];
-    [self.stack addArrangedSubview:[self button:@"Mapear URLs do binário" action:@selector(scanStaticAPIURLs)]];
     [self.stack addArrangedSubview:[self button:@"Compartilhar todos os logs" action:@selector(shareAllAPILogs)]];
     [self.stack addArrangedSubview:[self button:@"Limpar logs da API" action:@selector(clearAPILogs)]];
 
-    [self label:@"Tamanho do botão flutuante" size:13];
+    [self label:@"Botão flutuante" size:13];
+    [self label:@"Tamanho" size:11];
     self.bubbleSizeSlider = [UISlider new];
     self.bubbleSizeSlider.minimumValue = 42; self.bubbleSizeSlider.maximumValue = 82;
     [self.bubbleSizeSlider addTarget:self action:@selector(bubbleSizeChanged:) forControlEvents:UIControlEventValueChanged];
     [self.stack addArrangedSubview:self.bubbleSizeSlider];
 
-    [self label:@"Opacidade do botão flutuante" size:13];
+    [self label:@"Opacidade" size:11];
     self.bubbleOpacitySlider = [UISlider new];
     self.bubbleOpacitySlider.minimumValue = 0.35; self.bubbleOpacitySlider.maximumValue = 1.0;
     [self.bubbleOpacitySlider addTarget:self action:@selector(bubbleOpacityChanged:) forControlEvents:UIControlEventValueChanged];
@@ -1176,30 +1122,17 @@ static void SCUIInstallBackendRouter(void) {
     [self rowWithTitle:@"Feedback tátil" control:self.hapticsSwitch];
 
     [self.stack addArrangedSubview:[self button:@"Copiar configuração" action:@selector(copyConfiguration)]];
-    [self.stack addArrangedSubview:[self button:@"Restaurar visual original" action:@selector(resetVisual)]];
-
-    UIButton *close = [self button:@"Fechar" action:@selector(togglePanel)];
-    [self.stack addArrangedSubview:close];
+    [self.stack addArrangedSubview:[self button:@"Restaurar padrão" action:@selector(resetVisual)]];
 
     [self refreshControls];
 }
 
 - (void)refreshControls {
     SCUIManager *m = SCUIManager.shared;
-    self.glassSwitch.on = [m.prefs[@"glass"] boolValue];
-    self.videoSwitch.on = [m.prefs[@"videoEnabled"] boolValue];
-    self.videoMode.selectedSegmentIndex = [m.prefs[@"videoMode"] integerValue];
-    self.glassSlider.value = [m.prefs[@"glassIntensity"] floatValue];
-    self.radiusSlider.value = [m.prefs[@"cardRadius"] floatValue];
-    self.borderSlider.value = [m.prefs[@"borderWidth"] floatValue];
     self.bubbleSizeSlider.value = [m.prefs[@"bubbleSize"] floatValue];
     self.bubbleOpacitySlider.value = [m.prefs[@"bubbleOpacity"] floatValue];
     self.hapticsSwitch.on = [m.prefs[@"haptics"] boolValue];
-    self.apiLoggerSwitch.on = [m.prefs[@"apiLoggerEnabled"] boolValue];
     self.localLicenseBypassSwitch.on = [m.prefs[@"localLicenseBypass"] boolValue];
-    self.apiRoutingSwitch.on = [m.prefs[@"apiRoutingEnabled"] boolValue];
-    self.apiProfileControl.selectedSegmentIndex = [m.prefs[@"apiProfile"] integerValue];
-    self.apiPreservePathSwitch.on = [m.prefs[@"apiPreservePath"] boolValue];
     UIColor *accent = SCUIColorFromArray(m.prefs[@"accentColor"], UIColor.whiteColor);
     self.bubble.layer.borderColor = [accent colorWithAlphaComponent:self.panel && !self.panel.hidden ? 1.0 : 0.72].CGColor;
     self.bubble.layer.borderWidth = self.panel && !self.panel.hidden ? 1.15 : 0.75;
@@ -1237,16 +1170,15 @@ static void SCUIInstallBackendRouter(void) {
     }
 }
 
-- (void)radiusChanged:(UISlider *)s {
-    SCUIManager.shared.prefs[@"cardRadius"] = @(s.value); SCUISave(SCUIManager.shared.prefs);
-    for (UIWindow *w in SCUIWindows()) SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
-    [SCUIManager.shared apply];
+- (void)scui_patch_openDownloader {
+    UIViewController *top = self.window.rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    SCUIPatchDownloaderVC *vc = [SCUIPatchDownloaderVC new];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [top presentViewController:nav animated:YES completion:nil];
 }
-- (void)borderChanged:(UISlider *)s {
-    SCUIManager.shared.prefs[@"borderWidth"] = @(s.value); SCUISave(SCUIManager.shared.prefs);
-    for (UIWindow *w in SCUIWindows()) SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
-    [SCUIManager.shared apply];
-}
+
 - (void)bubbleSizeChanged:(UISlider *)s {
     SCUIManager.shared.prefs[@"bubbleSize"] = @(s.value); SCUISave(SCUIManager.shared.prefs);
     self.bubble.frame = CGRectZero; [self setNeedsLayout];
@@ -1255,182 +1187,37 @@ static void SCUIInstallBackendRouter(void) {
     SCUIManager.shared.prefs[@"bubbleOpacity"] = @(s.value); SCUISave(SCUIManager.shared.prefs);
     self.bubble.alpha = s.value;
 }
-- (void)hapticsChanged:(UISwitch *)s { SCUIManager.shared.prefs[@"haptics"] = @(s.on); SCUISave(SCUIManager.shared.prefs); }
+- (void)hapticsChanged:(UISwitch *)s {
+    SCUIManager.shared.prefs[@"haptics"] = @(s.on);
+    SCUISave(SCUIManager.shared.prefs);
+}
 - (void)copyConfiguration {
     NSError *e = nil;
     NSData *d = [NSJSONSerialization dataWithJSONObject:SCUIManager.shared.prefs options:NSJSONWritingPrettyPrinted error:&e];
     if (!e && d) UIPasteboard.generalPasteboard.string = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
 }
-
-- (void)glassChanged:(UISwitch *)s {
-    SCUIManager.shared.prefs[@"glass"] = @(s.on);
-    SCUISave(SCUIManager.shared.prefs);
-    [SCUIManager.shared apply];
-}
-- (void)glassIntensityChanged:(UISlider *)s {
-    SCUIManager.shared.prefs[@"glassIntensity"] = @(s.value);
-    SCUISave(SCUIManager.shared.prefs);
-    for (UIWindow *w in SCUIWindows()) {
-        SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
-    }
-    [SCUIManager.shared apply];
-}
-- (void)videoChanged:(UISwitch *)s {
-    SCUIManager.shared.prefs[@"videoEnabled"] = @(s.on);
-    SCUISave(SCUIManager.shared.prefs);
-    [SCUIManager.shared apply];
-}
-- (void)videoModeChanged:(UISegmentedControl *)s {
-    SCUIManager.shared.prefs[@"videoMode"] = @(s.selectedSegmentIndex);
-    SCUISave(SCUIManager.shared.prefs);
-    if (s.selectedSegmentIndex == 1) [SCUIManager.shared reloadCustomVideo];
-    else [SCUIManager.shared apply];
-}
-
-- (void)pickCardColor { self.colorTarget = 0; [self showColorPickerForKey:@"cardColor"]; }
-- (void)pickAccentColor { self.colorTarget = 1; [self showColorPickerForKey:@"accentColor"]; }
-
-- (void)showColorPickerForKey:(NSString *)key {
-    UIColorPickerViewController *picker = [UIColorPickerViewController new];
-    picker.delegate = self;
-    picker.supportsAlpha = YES;
-    picker.selectedColor = SCUIColorFromArray(SCUIManager.shared.prefs[key], UIColor.whiteColor);
-    UIViewController *vc = self.window.rootViewController;
-    while (vc.presentedViewController) vc = vc.presentedViewController;
-    [vc presentViewController:picker animated:YES completion:nil];
-}
-
-- (void)colorPickerViewControllerDidSelectColor:(UIColorPickerViewController *)viewController {
-    NSString *key = self.colorTarget == 0 ? @"cardColor" : @"accentColor";
-    SCUIManager.shared.prefs[key] = SCUIArrayFromColor(viewController.selectedColor);
-    SCUISave(SCUIManager.shared.prefs);
-    if (self.colorTarget == 0) {
-        for (UIWindow *w in SCUIWindows()) SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
-    }
-    [SCUIManager.shared apply];
-}
-
-- (void)chooseVideo {
-    self.documentPickerPurpose = 0;
-    UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeMovie, UTTypeMPEG4Movie] asCopy:YES];
-    picker.delegate = self;
-    picker.allowsMultipleSelection = NO;
-    UIViewController *vc = self.window.rootViewController;
-    while (vc.presentedViewController) vc = vc.presentedViewController;
-    [vc presentViewController:picker animated:YES completion:nil];
-}
-
 - (void)localLicenseBypassChanged:(UISwitch *)sender {
     SCUIManager.shared.prefs[@"localLicenseBypass"] = @(sender.on);
     SCUISave(SCUIManager.shared.prefs);
-    NSString *msg = sender.on
-        ? @"Modo local ativado. A rota /api/license/validate será respondida localmente para testes. Feche e abra a tela de key e valide novamente."
-        : @"Modo local desativado. A validação volta a usar a API configurada/original.";
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Bypass local" message:msg preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
+}
+   
+- (UIViewController *)scuiTopController {
+    UIViewController *vc = self.window.rootViewController;
+    while (vc.presentedViewController) vc = vc.presentedViewController;
+    return vc;
 }
 
-- (void)apiRoutingChanged:(UISwitch *)sender {
-    SCUIManager.shared.prefs[@"apiRoutingEnabled"] = @(sender.on);
-    SCUISave(SCUIManager.shared.prefs);
-}
-
-- (void)apiProfileChanged:(UISegmentedControl *)sender {
-    SCUIManager.shared.prefs[@"apiProfile"] = @(sender.selectedSegmentIndex);
-    SCUISave(SCUIManager.shared.prefs);
-}
-
-- (void)apiPreservePathChanged:(UISwitch *)sender {
-    SCUIManager.shared.prefs[@"apiPreservePath"] = @(sender.on);
-    SCUISave(SCUIManager.shared.prefs);
-}
-
-- (void)showAPIEditor {
-    SCUIManager *m = SCUIManager.shared;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Conexão / API"
-        message:@"API A/B/Custom são perfis locais. Host original vazio = filtrar apenas pelas rotas abaixo."
-        preferredStyle:UIAlertControllerStyleAlert];
-    NSArray *keys = @[@"apiAURL", @"apiBURL", @"apiCustomURL", @"apiSourceHost", @"apiPathFilter"];
-    NSArray *placeholders = @[@"API A — https://servidor.com", @"API B — https://servidor.com", @"Custom — https://servidor.com", @"Host original (opcional)", @"Rotas separadas por vírgula"];
-    for (NSInteger i=0; i<keys.count; i++) {
-        [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
-            f.placeholder = placeholders[i];
-            f.text = [m.prefs[keys[i]] isKindOfClass:NSString.class] ? m.prefs[keys[i]] : @"";
-            f.autocapitalizationType = UITextAutocapitalizationTypeNone;
-            f.autocorrectionType = UITextAutocorrectionTypeNo;
-            f.keyboardType = (i < 3) ? UIKeyboardTypeURL : UIKeyboardTypeDefault;
-        }];
+- (NSString *)scuiSanitizedRelativePath:(NSString *)input {
+    NSString *p = [input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    p = [p stringByReplacingOccurrencesOfString:@"\\\\" withString:@"/"];
+    while ([p hasPrefix:@"/"]) p = [p substringFromIndex:1];
+    NSMutableArray<NSString *> *safe = [NSMutableArray array];
+    for (NSString *part in [p componentsSeparatedByString:@"/"]) {
+        if (!part.length || [part isEqualToString:@"."]) continue;
+        if ([part isEqualToString:@".."]) continue;
+        [safe addObject:part];
     }
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Salvar" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        for (NSInteger i=0; i<keys.count; i++) {
-            m.prefs[keys[i]] = SCUITrim(a.textFields[i].text ?: @"");
-        }
-        SCUISave(m.prefs);
-        [self refreshControls];
-    }]];
-    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
-}
-
-- (void)testActiveAPI {
-    NSString *baseText = SCUIActiveAPIBaseURL();
-    NSURL *url = [NSURL URLWithString:baseText];
-    if (!url || url.scheme.length == 0 || url.host.length == 0) {
-        UIAlertController *bad = [UIAlertController alertControllerWithTitle:@"API inválida" message:@"Configure uma URL completa começando com http:// ou https://." preferredStyle:UIAlertControllerStyleAlert];
-        [bad addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-        [[self scuiTopController] presentViewController:bad animated:YES completion:nil];
-        return;
-    }
-    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
-    cfg.timeoutIntervalForRequest = 8.0;
-    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.HTTPMethod = @"GET";
-    [req setValue:@"Satanabe-Backend-Lab/1.0" forHTTPHeaderField:@"User-Agent"];
-    [[session dataTaskWithRequest:req completionHandler:^(__unused NSData *data, NSURLResponse *response, NSError *error) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSString *message = nil;
-            if (error) message = [NSString stringWithFormat:@"Falha: %@", error.localizedDescription ?: @"erro desconhecido"];
-            else if ([response isKindOfClass:NSHTTPURLResponse.class]) {
-                NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
-                message = [NSString stringWithFormat:@"Servidor respondeu HTTP %ld. Mesmo 401/404 confirma que o host respondeu.", (long)status];
-            } else message = @"Servidor respondeu.";
-            UIAlertController *ok = [UIAlertController alertControllerWithTitle:@"Teste da API" message:message preferredStyle:UIAlertControllerStyleAlert];
-            [ok addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-            [[self scuiTopController] presentViewController:ok animated:YES completion:nil];
-        });
-    }] resume];
-}
-
-- (void)resetVisual {
-    SCUIManager *m = SCUIManager.shared;
-    m.prefs[@"glass"] = @NO;
-    m.prefs[@"videoEnabled"] = @YES;
-    m.prefs[@"videoMode"] = @0;
-    m.prefs[@"glassIntensity"] = @0.62;
-    m.prefs[@"cardRadius"] = @20.0;
-    m.prefs[@"borderWidth"] = @0.55;
-    m.prefs[@"bubbleSize"] = @56.0;
-    m.prefs[@"bubbleOpacity"] = @0.90;
-    m.prefs[@"haptics"] = @YES;
-    m.prefs[@"apiLoggerEnabled"] = @YES;
-    m.prefs[@"localLicenseBypass"] = @NO;
-    m.prefs[@"apiRoutingEnabled"] = @NO;
-    m.prefs[@"apiProfile"] = @0;
-    m.prefs[@"apiPreservePath"] = @YES;
-    SCUISave(m.prefs);
-    for (UIWindow *w in SCUIWindows()) {
-        SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
-        SCUISetHostVideosHidden(w, NO);
-    }
-    [m apply];
-}
-
-- (void)apiLoggerChanged:(UISwitch *)sender {
-    SCUIManager.shared.prefs[@"apiLoggerEnabled"] = @(sender.on);
-    SCUISave(SCUIManager.shared.prefs);
+    return [safe componentsJoinedByString:@"/"];
 }
 
 - (NSString *)scuiDisplayLocationForURL:(NSURL *)url {
@@ -1458,19 +1245,10 @@ static void SCUIInstallBackendRouter(void) {
 - (NSString *)scuiFirstStringForKeys:(NSArray<NSString *> *)keys inObject:(id)obj {
     if ([obj isKindOfClass:NSDictionary.class]) {
         NSDictionary *d = (NSDictionary *)obj;
-        for (NSString *k in keys) {
-            id v = d[k];
-            if ([v isKindOfClass:NSString.class] && [v length]) return v;
-        }
-        for (id v in d.allValues) {
-            NSString *hit = [self scuiFirstStringForKeys:keys inObject:v];
-            if (hit.length) return hit;
-        }
+        for (NSString *k in keys) { id v = d[k]; if ([v isKindOfClass:NSString.class] && [v length]) return v; }
+        for (id v in d.allValues) { NSString *hit = [self scuiFirstStringForKeys:keys inObject:v]; if (hit.length) return hit; }
     } else if ([obj isKindOfClass:NSArray.class]) {
-        for (id v in (NSArray *)obj) {
-            NSString *hit = [self scuiFirstStringForKeys:keys inObject:v];
-            if (hit.length) return hit;
-        }
+        for (id v in (NSArray *)obj) { NSString *hit = [self scuiFirstStringForKeys:keys inObject:v]; if (hit.length) return hit; }
     }
     return nil;
 }
@@ -1512,8 +1290,8 @@ static void SCUIInstallBackendRouter(void) {
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
     NSArray *keys = @[NSURLIsRegularFileKey, NSURLIsDirectoryKey, NSURLNameKey, NSURLFileSizeKey];
     for (NSURL *root in roots) {
-        NSDirectoryEnumerator *en = [fm enumeratorAtURL:root includingPropertiesForKeys:keys
-            options:0 errorHandler:^BOOL(NSURL *url, NSError *error) { (void)url; (void)error; return YES; }];
+        NSDirectoryEnumerator *en = [fm enumeratorAtURL:root includingPropertiesForKeys:keys options:0
+            errorHandler:^BOOL(NSURL *url, NSError *error) { (void)url; (void)error; return YES; }];
         for (NSURL *u in en) {
             NSNumber *isRegular = nil;
             [u getResourceValue:&isRegular forKey:NSURLIsRegularFileKey error:nil];
@@ -1531,10 +1309,8 @@ static void SCUIInstallBackendRouter(void) {
                 SCUIPatchCandidate *c = [SCUIPatchCandidate new];
                 c.title = title;
                 c.subtitle = [NSString stringWithFormat:@"Projeto 3105 • %@", [self scuiDisplayLocationForURL:dir]];
-                c.url = dir;
-                c.kind = 1;
-                [seen addObject:projectKey];
-                [found addObject:c];
+                c.url = dir; c.kind = 1;
+                [seen addObject:projectKey]; [found addObject:c];
                 continue;
             }
             BOOL ext3105 = [[u.pathExtension lowercaseString] isEqualToString:@"3105"];
@@ -1547,10 +1323,8 @@ static void SCUIInstallBackendRouter(void) {
             if (!ext3105) title = [[title stringByDeletingPathExtension] stringByAppendingPathExtension:@"3105"];
             c.title = title;
             c.subtitle = [NSString stringWithFormat:@"Pacote 3105 • %@", [self scuiDisplayLocationForURL:u]];
-            c.url = u;
-            c.kind = 0;
-            [seen addObject:fileKey];
-            [found addObject:c];
+            c.url = u; c.kind = 0;
+            [seen addObject:fileKey]; [found addObject:c];
         }
     }
     [found sortUsingComparator:^NSComparisonResult(SCUIPatchCandidate *a, SCUIPatchCandidate *b) {
@@ -1609,7 +1383,10 @@ static void SCUIInstallBackendRouter(void) {
 - (void)showInstalledPatchExporter {
     NSArray<SCUIPatchCandidate *> *patches = [self scuiDiscoverPatchCandidates];
     if (!patches.count) {
-        [self showExportError:@"Nenhum pacote 3105 nem projeto importado foi encontrado. Esta versão também procura arquivos com assinatura 3105PATCH e projetos .3105-project.plist, inclusive arquivos ocultos do sandbox."];
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Exportação"
+            message:@"Nenhum .3105 encontrado no sandbox." preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [[self scuiTopController] presentViewController:a animated:YES completion:nil];
         return;
     }
     SCUIPatchExportController *list = [SCUIPatchExportController new];
@@ -1619,17 +1396,12 @@ static void SCUIInstallBackendRouter(void) {
         SCUIOverlay *overlay = weakOverlay;
         if (!overlay || !items.count) return;
         NSMutableArray<NSURL *> *shareURLs = [NSMutableArray array];
-        NSMutableArray<NSString *> *errors = [NSMutableArray array];
         for (SCUIPatchCandidate *item in items) {
             NSError *e = nil;
             NSURL *prepared = [overlay scuiPrepareCandidateForSharing:item error:&e];
             if (prepared) [shareURLs addObject:prepared];
-            else [errors addObject:[NSString stringWithFormat:@"%@: %@", item.title ?: @"Patch", e.localizedDescription ?: @"falha ao preparar"]];
         }
-        if (!shareURLs.count) {
-            [overlay showExportError:errors.count ? [errors componentsJoinedByString:@"\n"] : @"Não foi possível preparar os patches."];
-            return;
-        }
+        if (!shareURLs.count) return;
         UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:shareURLs applicationActivities:nil];
         if (share.popoverPresentationController) {
             share.popoverPresentationController.sourceView = overlay.bubble;
@@ -1640,150 +1412,6 @@ static void SCUIInstallBackendRouter(void) {
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:list];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     [[self scuiTopController] presentViewController:nav animated:YES completion:nil];
-}
-
-- (void)choosePatchForExport {
-    self.documentPickerPurpose = 1;
-    UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData] asCopy:YES];
-    picker.delegate = self;
-    picker.allowsMultipleSelection = NO;
-    UIViewController *vc = self.window.rootViewController;
-    while (vc.presentedViewController) vc = vc.presentedViewController;
-    [vc presentViewController:picker animated:YES completion:nil];
-}
-
-- (UIViewController *)scuiTopController {
-    UIViewController *vc = self.window.rootViewController;
-    while (vc.presentedViewController) vc = vc.presentedViewController;
-    return vc;
-}
-
-- (NSString *)scuiSanitizedRelativePath:(NSString *)input {
-    NSString *p = [input stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    p = [p stringByReplacingOccurrencesOfString:@"\\\\" withString:@"/"];
-    while ([p hasPrefix:@"/"]) p = [p substringFromIndex:1];
-    NSMutableArray<NSString *> *safe = [NSMutableArray array];
-    for (NSString *part in [p componentsSeparatedByString:@"/"]) {
-        if (!part.length || [part isEqualToString:@"."]) continue;
-        if ([part isEqualToString:@".."]) continue;
-        [safe addObject:part];
-    }
-    return [safe componentsJoinedByString:@"/"];
-}
-
-- (void)askExportPathForURL:(NSURL *)src {
-    self.pendingExportSourceURL = src;
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Exportar patch"
-        message:@"Informe a pasta de destino usada pelo patch. O ZIP terá essa mesma estrutura e também um PATCH_PATH.txt."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
-        f.placeholder = @"com.dts.freefireth/Documents/...";
-        f.text = @"com.dts.freefireth/Documents/";
-        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        f.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    [a addTextFieldWithConfigurationHandler:^(UITextField *f) {
-        f.placeholder = @"Nome final (opcional)";
-        f.text = src.lastPathComponent ?: @"patch.bin";
-        f.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        f.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    __weak SCUIOverlay *weakSelf = self;
-    __weak UIAlertController *weakAlert = a;
-    [a addAction:[UIAlertAction actionWithTitle:@"Cancelar" style:UIAlertActionStyleCancel handler:nil]];
-    [a addAction:[UIAlertAction actionWithTitle:@"Gerar ZIP" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        SCUIOverlay *strongSelf = weakSelf;
-        UIAlertController *strongAlert = weakAlert;
-        if (!strongSelf || !strongAlert) return;
-        NSString *folder = strongAlert.textFields.firstObject.text ?: @"";
-        NSString *name = strongAlert.textFields.count > 1 ? strongAlert.textFields[1].text : @"";
-        [strongSelf createPatchExportFromURL:src targetFolder:folder finalName:name];
-    }]];
-    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
-}
-
-- (void)showExportError:(NSString *)message {
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Exportação"
-        message:message ?: @"Falha desconhecida."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
-}
-
-- (void)createPatchExportFromURL:(NSURL *)src targetFolder:(NSString *)folder finalName:(NSString *)finalName {
-    if (!src) { [self showExportError:@"Arquivo de origem não encontrado."]; return; }
-    NSString *safeFolder = [self scuiSanitizedRelativePath:folder ?: @""];
-    NSString *safeName = [finalName lastPathComponent];
-    if (!safeName.length) safeName = src.lastPathComponent ?: @"patch.bin";
-    if (!safeFolder.length) { [self showExportError:@"Informe o caminho de destino."]; return; }
-    NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *stamp = [NSString stringWithFormat:@"%.0f", NSDate.date.timeIntervalSince1970];
-    NSURL *root = [[NSURL fileURLWithPath:NSTemporaryDirectory() isDirectory:YES]
-        URLByAppendingPathComponent:[@"SatanabePatchExport-" stringByAppendingString:stamp] isDirectory:YES];
-    [fm removeItemAtURL:root error:nil];
-    NSError *error = nil;
-    if (![fm createDirectoryAtURL:root withIntermediateDirectories:YES attributes:nil error:&error]) {
-        [self showExportError:error.localizedDescription]; return;
-    }
-    NSURL *targetDir = [root URLByAppendingPathComponent:safeFolder isDirectory:YES];
-    if (![fm createDirectoryAtURL:targetDir withIntermediateDirectories:YES attributes:nil error:&error]) {
-        [self showExportError:error.localizedDescription]; return;
-    }
-    NSURL *payloadDst = [targetDir URLByAppendingPathComponent:safeName];
-    [fm removeItemAtURL:payloadDst error:nil];
-    BOOL access = [src startAccessingSecurityScopedResource];
-    BOOL copied = [fm copyItemAtURL:src toURL:payloadDst error:&error];
-    if (access) [src stopAccessingSecurityScopedResource];
-    if (!copied) { [self showExportError:error.localizedDescription]; return; }
-    NSString *fullTarget = [safeFolder stringByAppendingPathComponent:safeName];
-    NSString *txt = [NSString stringWithFormat:
-        @"SATANABE PATCH EXPORT\\n\\nCaminho destino:\\n/%@\\n\\nArquivo final:\\n%@\\n\\nArquivo de origem:\\n%@\\n",
-        fullTarget, safeName, src.lastPathComponent ?: @"-"];
-    [txt writeToURL:[root URLByAppendingPathComponent:@"PATCH_PATH.txt"]
-        atomically:YES encoding:NSUTF8StringEncoding error:nil];
-    NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
-    __block NSURL *zipURL = nil;
-    __block NSError *coordError = nil;
-    [coordinator coordinateReadingItemAtURL:root options:NSFileCoordinatorReadingForUploading
-        error:&coordError byAccessor:^(NSURL *newURL) {
-            NSURL *out = [[NSURL fileURLWithPath:NSTemporaryDirectory()]
-                URLByAppendingPathComponent:@"Satanabe-Patch-Export.zip"];
-            [fm removeItemAtURL:out error:nil];
-            NSError *copyError = nil;
-            if ([fm copyItemAtURL:newURL toURL:out error:&copyError]) zipURL = out;
-            else coordError = copyError;
-        }];
-    if (!zipURL) { [self showExportError:coordError.localizedDescription ?: @"Não foi possível gerar o ZIP."]; return; }
-    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[zipURL] applicationActivities:nil];
-    if (share.popoverPresentationController) {
-        share.popoverPresentationController.sourceView = self.bubble;
-        share.popoverPresentationController.sourceRect = self.bubble.bounds;
-    }
-    [[self scuiTopController] presentViewController:share animated:YES completion:nil];
-}
-
-- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
-    NSURL *src = urls.firstObject;
-    if (!src) return;
-    if (self.documentPickerPurpose == 1) {
-        [self askExportPathForURL:src];
-        return;
-    }
-    NSURL *dst = [SCUIManager.shared customVideoURL];
-    NSFileManager *fm = NSFileManager.defaultManager;
-    [fm removeItemAtURL:dst error:nil];
-    NSError *error = nil;
-    BOOL access = [src startAccessingSecurityScopedResource];
-    [fm copyItemAtURL:src toURL:dst error:&error];
-    if (access) [src stopAccessingSecurityScopedResource];
-    if (!error) {
-        SCUIManager.shared.prefs[@"videoMode"] = @1;
-        SCUIManager.shared.prefs[@"videoEnabled"] = @YES;
-        SCUISave(SCUIManager.shared.prefs);
-        [SCUIManager.shared reloadCustomVideo];
-    }
-    (void)controller;
 }
 
 - (void)shareItems:(NSArray *)items fromView:(UIView *)view {
@@ -1800,87 +1428,387 @@ static void SCUIInstallBackendRouter(void) {
     [self shareItems:@[SCUIPrettyLog(log) ?: @""] fromView:self.window];
 }
 
-- (void)showAPILogAtIndex:(NSInteger)index logs:(NSArray<NSDictionary *> *)logs {
-    if (!logs.count || index < 0 || index >= (NSInteger)logs.count) return;
-    NSDictionary *log = logs[(NSUInteger)index];
-    NSString *event = [log[@"event"] description] ?: @"log";
-    NSString *method = [log[@"method"] description] ?: @"";
-    NSString *url = [log[@"url"] description] ?: @"";
-    NSString *status = log[@"status"] ? [NSString stringWithFormat:@"HTTP %@", log[@"status"]] : @"";
-    NSString *validation = [log[@"validationResult"] description] ?: @"";
-    NSString *licenseKey = [log[@"licenseKey"] description] ?: @"";
-    NSString *serverMessage = [log[@"serverMessage"] description] ?: @"";
-    NSString *body = [log[@"body"] description] ?: @"";
-    if (body.length > 1600) body = [[body substringToIndex:1600] stringByAppendingString:@"…"];
-    NSMutableArray<NSString *> *lines = [NSMutableArray array];
-    [lines addObject:[NSString stringWithFormat:@"%@ %@", event.uppercaseString, method]];
-    if (url.length) [lines addObject:url];
-    if (status.length) [lines addObject:status];
-    if (validation.length) [lines addObject:[NSString stringWithFormat:@"VALIDAÇÃO: %@", validation]];
-    if (licenseKey.length) [lines addObject:[NSString stringWithFormat:@"KEY: %@", licenseKey]];
-    if (serverMessage.length) [lines addObject:[NSString stringWithFormat:@"SERVIDOR: %@", serverMessage]];
-    if (body.length) { [lines addObject:@""]; [lines addObject:body]; }
-    UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:
-            [NSString stringWithFormat:@"API Log %ld/%lu", (long)(index + 1), (unsigned long)logs.count]
-                                            message:[lines componentsJoinedByString:@"\n"]
-                                     preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Compartilhar este log" style:UIAlertActionStyleDefault
-                                           handler:^(__unused UIAlertAction *action) { [self shareLogDictionary:log]; }]];
-    if (index > 0) {
-        [alert addAction:[UIAlertAction actionWithTitle:@"Anterior" style:UIAlertActionStyleDefault
-                                               handler:^(__unused UIAlertAction *action) { [self showAPILogAtIndex:index - 1 logs:logs]; }]];
-    }
-    if (index + 1 < (NSInteger)logs.count) {
-        [alert addAction:[UIAlertAction actionWithTitle:@"Próximo" style:UIAlertActionStyleDefault
-                                               handler:^(__unused UIAlertAction *action) { [self showAPILogAtIndex:index + 1 logs:logs]; }]];
-    }
-    [alert addAction:[UIAlertAction actionWithTitle:@"Fechar" style:UIAlertActionStyleCancel handler:nil]];
-    [[self scuiTopController] presentViewController:alert animated:YES completion:nil];
-}
-
 - (void)showAPILogs {
     NSArray<NSDictionary *> *allLogs = SCUIReadAPILogs();
     if (!allLogs.count) {
         UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"API Logger"
-            message:@"Nenhuma requisição HTTP/HTTPS registrada ainda." preferredStyle:UIAlertControllerStyleAlert];
+            message:@"Nenhuma requisição registrada." preferredStyle:UIAlertControllerStyleAlert];
         [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
         [[self scuiTopController] presentViewController:empty animated:YES completion:nil];
         return;
     }
-    NSArray<NSDictionary *> *logs = allLogs.count > 20 ? [allLogs subarrayWithRange:NSMakeRange(allLogs.count - 20, 20)] : allLogs;
-    [self showAPILogAtIndex:(NSInteger)logs.count - 1 logs:logs];
-}
-
-- (void)scanStaticAPIURLs {
-    NSArray<NSString *> *urls = SCUIStaticURLInventory();
-    SCUILogStaticURLInventory();
-    NSString *message = urls.count
-        ? [NSString stringWithFormat:@"%lu URL(s) HTTP/HTTPS hardcoded(s) encontradas no executável e adicionadas ao log.", (unsigned long)urls.count]
-        : @"Nenhuma URL HTTP/HTTPS hardcoded foi encontrada no executável principal.";
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Mapa de URLs" message:message preferredStyle:UIAlertControllerStyleAlert];
-    if (urls.count) {
-        [a addAction:[UIAlertAction actionWithTitle:@"Compartilhar URLs" style:UIAlertActionStyleDefault
-                                           handler:^(__unused UIAlertAction *action) {
-            NSString *text = [urls componentsJoinedByString:@"\n"];
-            [self shareItems:@[text ?: @""] fromView:self.window];
-        }]];
+    NSMutableString *text = [NSMutableString string];
+    NSArray<NSDictionary *> *last = allLogs.count > 10 ? [allLogs subarrayWithRange:NSMakeRange(allLogs.count - 10, 10)] : allLogs;
+    for (NSDictionary *log in last) {
+        [text appendFormat:@"%@ %@\n%@\n\n",
+            [log[@"method"] description] ?: @"",
+            [log[@"status"] description] ?: @"",
+            [log[@"url"] description] ?: @""];
     }
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"API Logger" message:text preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Compartilhar" style:UIAlertActionStyleDefault handler:^(UIAlertAction *act) {
+        [self shareItems:@[text] fromView:self.window];
+    }]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Fechar" style:UIAlertActionStyleCancel handler:nil]];
     [[self scuiTopController] presentViewController:a animated:YES completion:nil];
 }
 
 - (void)clearAPILogs {
     [NSFileManager.defaultManager removeItemAtPath:SCUILoggerPath() error:nil];
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"API Logger" message:@"Logs apagados." preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [[self scuiTopController] presentViewController:a animated:YES completion:nil];
 }
 
 - (void)shareAllAPILogs {
     NSString *path = SCUILoggerPath();
     if (![NSFileManager.defaultManager fileExistsAtPath:path]) { [self showAPILogs]; return; }
     [self shareItems:@[[NSURL fileURLWithPath:path]] fromView:self.window];
+}
+
+- (void)resetVisual {
+    SCUIManager *m = SCUIManager.shared;
+    m.prefs[@"glass"] = @NO;
+    m.prefs[@"videoEnabled"] = @YES;
+    m.prefs[@"videoMode"] = @0;
+    m.prefs[@"bubbleSize"] = @56.0;
+    m.prefs[@"bubbleOpacity"] = @0.90;
+    m.prefs[@"haptics"] = @YES;
+    m.prefs[@"localLicenseBypass"] = @NO;
+    SCUISave(m.prefs);
+    for (UIWindow *w in SCUIWindows()) {
+        SCUIWalkViews(w, ^(UIView *v){ SCUIRemoveGlassFromView(v); });
+        SCUISetHostVideosHidden(w, NO);
+    }
+    [m apply];
+}
+
+@end
+
+#pragma mark - Patch Downloader (com key)
+
+@interface SCUIPatchDLItem : NSObject
+@property(nonatomic, strong) NSNumber *versionId;
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic, copy) NSString *game;
+@property(nonatomic, copy) NSString *section;
+@property(nonatomic, copy) NSString *fileName;
+@property(nonatomic, strong) NSNumber *sizeBytes;
+@property(nonatomic, copy) NSString *downloadUrl;
+@property(nonatomic, assign) BOOL selected;
+@end
+@implementation SCUIPatchDLItem
++ (instancetype)fromDict:(NSDictionary *)d {
+    if (![d isKindOfClass:NSDictionary.class]) return nil;
+    SCUIPatchDLItem *it = [SCUIPatchDLItem new];
+    it.versionId = d[@"versionId"];
+    it.title = [d[@"title"] isKindOfClass:NSString.class] ? d[@"title"] : @"";
+    it.game = [d[@"game"] isKindOfClass:NSString.class] ? d[@"game"] : @"";
+    it.section = [d[@"section"] isKindOfClass:NSString.class] ? d[@"section"] : @"";
+    it.fileName = [d[@"fileName"] isKindOfClass:NSString.class] ? d[@"fileName"] : @"";
+    it.sizeBytes = d[@"sizeBytes"];
+    it.downloadUrl = [d[@"downloadUrl"] isKindOfClass:NSString.class] ? d[@"downloadUrl"] : @"";
+    it.selected = NO;
+    return it;
+}
+@end
+
+@interface SCUIPatchDownloaderVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property(nonatomic, strong) UITextField *keyField;
+@property(nonatomic, strong) UIButton *loadButton;
+@property(nonatomic, strong) UIButton *downloadButton;
+@property(nonatomic, strong) UIButton *exportButton;
+@property(nonatomic, strong) UILabel *statusLabel;
+@property(nonatomic, strong) UITableView *tableView;
+@property(nonatomic, strong) NSMutableArray<SCUIPatchDLItem *> *items;
+@property(nonatomic, assign) NSInteger pendingDownloads;
+@property(nonatomic, assign) NSInteger completedDownloads;
+@property(nonatomic, strong) NSMutableArray<NSString *> *failedDownloads;
+@end
+
+@implementation SCUIPatchDownloaderVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Baixar patches";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.items = [NSMutableArray array];
+    self.failedDownloads = [NSMutableArray array];
+
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(closePressed)];
+
+    self.keyField = [UITextField new];
+    self.keyField.placeholder = @"Cole a key aqui";
+    self.keyField.borderStyle = UITextBorderStyleRoundedRect;
+    self.keyField.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
+    self.keyField.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.keyField.translatesAutoresizingMaskIntoConstraints = NO;
+    self.keyField.text = SCUIPrefs()[@"patchDownloaderKey"] ?: @"";
+    [self.view addSubview:self.keyField];
+
+    self.loadButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.loadButton setTitle:@"Carregar catálogo" forState:UIControlStateNormal];
+    self.loadButton.backgroundColor = UIColor.systemBlueColor;
+    [self.loadButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    self.loadButton.layer.cornerRadius = 10;
+    self.loadButton.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    self.loadButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.loadButton addTarget:self action:@selector(loadCatalog) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.loadButton];
+
+    self.statusLabel = [UILabel new];
+    self.statusLabel.text = @"Digite a key e toque em Carregar.";
+    self.statusLabel.textAlignment = NSTextAlignmentCenter;
+    self.statusLabel.numberOfLines = 0;
+    self.statusLabel.font = [UIFont systemFontOfSize:13];
+    self.statusLabel.textColor = UIColor.secondaryLabelColor;
+    self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:self.statusLabel];
+
+    UITableView *tv = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
+    tv.translatesAutoresizingMaskIntoConstraints = NO;
+    tv.dataSource = self;
+    tv.delegate = self;
+    [self.view addSubview:tv];
+    self.tableView = tv;
+
+    UIView *bar = [UIView new];
+    bar.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    bar.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.view addSubview:bar];
+
+    self.downloadButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.downloadButton setTitle:@"Baixar" forState:UIControlStateNormal];
+    self.downloadButton.backgroundColor = UIColor.systemGreenColor;
+    [self.downloadButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    self.downloadButton.layer.cornerRadius = 8;
+    self.downloadButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    self.downloadButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.downloadButton.enabled = NO;
+    [self.downloadButton addTarget:self action:@selector(downloadSelected) forControlEvents:UIControlEventTouchUpInside];
+    [bar addSubview:self.downloadButton];
+
+    self.exportButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.exportButton setTitle:@"Exportar ZIP" forState:UIControlStateNormal];
+    self.exportButton.backgroundColor = UIColor.systemOrangeColor;
+    [self.exportButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    self.exportButton.layer.cornerRadius = 8;
+    self.exportButton.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    self.exportButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.exportButton.enabled = NO;
+    [self.exportButton addTarget:self action:@selector(exportZIP) forControlEvents:UIControlEventTouchUpInside];
+    [bar addSubview:self.exportButton];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.keyField.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [self.keyField.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [self.keyField.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [self.keyField.heightAnchor constraintEqualToConstant:40],
+
+        [self.loadButton.topAnchor constraintEqualToAnchor:self.keyField.bottomAnchor constant:8],
+        [self.loadButton.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [self.loadButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [self.loadButton.heightAnchor constraintEqualToConstant:40],
+
+        [self.statusLabel.topAnchor constraintEqualToAnchor:self.loadButton.bottomAnchor constant:10],
+        [self.statusLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [self.statusLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+
+        [tv.topAnchor constraintEqualToAnchor:self.statusLabel.bottomAnchor constant:8],
+        [tv.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [tv.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [tv.bottomAnchor constraintEqualToAnchor:bar.topAnchor],
+
+        [bar.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [bar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [bar.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        [bar.heightAnchor constraintEqualToConstant:60],
+
+        [self.downloadButton.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor constant:12],
+        [self.downloadButton.centerYAnchor constraintEqualToAnchor:bar.centerYAnchor],
+        [self.downloadButton.heightAnchor constraintEqualToConstant:40],
+        [self.downloadButton.widthAnchor constraintEqualToAnchor:self.exportButton.widthAnchor],
+
+        [self.exportButton.leadingAnchor constraintEqualToAnchor:self.downloadButton.trailingAnchor constant:10],
+        [self.exportButton.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor constant:-12],
+        [self.exportButton.centerYAnchor constraintEqualToAnchor:bar.centerYAnchor],
+        [self.exportButton.heightAnchor constraintEqualToConstant:40]
+    ]];
+}
+
+- (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)setStatus:(NSString *)text color:(UIColor *)color {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.statusLabel.text = text ?: @"";
+        self.statusLabel.textColor = color ?: UIColor.secondaryLabelColor;
+    });
+}
+
+- (void)loadCatalog {
+    NSString *key = [self.keyField.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+    if (key.length == 0) { [self setStatus:@"Digite a key primeiro." color:UIColor.systemRedColor]; return; }
+
+    NSMutableDictionary *p = SCUIPrefs();
+    p[@"patchDownloaderKey"] = key;
+    SCUISave(p);
+
+    [self.items removeAllObjects];
+    [self.tableView reloadData];
+    self.downloadButton.enabled = NO;
+    self.exportButton.enabled = NO;
+    [self setStatus:@"Consultando API..." color:nil];
+
+    NSString *base = SCUIActiveAPIBaseURL();
+    if (base.length == 0) base = @"https://api-production-182c.up.railway.app";
+    NSURL *url = [NSURL URLWithString:[base stringByAppendingString:@"/api/patches/catalog"]];
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    NSString *deviceId = UIDevice.currentDevice.identifierForVendor.UUIDString ?: @"LOCAL-DEVICE";
+    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{@"key": key, @"deviceId": deviceId} options:0 error:nil];
+
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.defaultSessionConfiguration;
+    cfg.timeoutIntervalForRequest = 15.0;
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:cfg];
+
+    [[session dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error) { [self setStatus:[NSString stringWithFormat:@"Erro: %@", error.localizedDescription] color:UIColor.systemRedColor]; return; }
+            id json = data.length ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+            if (![json isKindOfClass:NSDictionary.class]) { [self setStatus:@"Resposta inválida." color:UIColor.systemRedColor]; return; }
+            NSDictionary *d = (NSDictionary *)json;
+            if (![d[@"valid"] boolValue]) {
+                [self setStatus:[d[@"message"] description] ?: @"Chave inválida." color:UIColor.systemRedColor];
+                return;
+            }
+            for (id p in d[@"patches"]) {
+                SCUIPatchDLItem *it = [SCUIPatchDLItem fromDict:p];
+                if (it) [self.items addObject:it];
+            }
+            [self.tableView reloadData];
+            [self setStatus:[NSString stringWithFormat:@"%lu patches carregados.", (unsigned long)self.items.count] color:UIColor.systemGreenColor];
+        });
+    }] resume];
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return (NSInteger)self.items.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *rid = @"SCUIPatchDLCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:rid];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:rid];
+    SCUIPatchDLItem *it = self.items[(NSUInteger)indexPath.row];
+    cell.textLabel.text = it.title.length ? it.title : it.fileName;
+    long long size = [it.sizeBytes longLongValue];
+    NSString *sizeText = size > 1024*1024
+        ? [NSString stringWithFormat:@"%.1f MB", size/1024.0/1024.0]
+        : [NSString stringWithFormat:@"%.1f KB", size/1024.0];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@ • %@ • %@", it.game, it.section, sizeText];
+    cell.detailTextLabel.numberOfLines = 1;
+    cell.accessoryType = it.selected ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    SCUIPatchDLItem *it = self.items[(NSUInteger)indexPath.row];
+    it.selected = !it.selected;
+    [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+
+    NSInteger count = 0;
+    for (SCUIPatchDLItem *x in self.items) if (x.selected) count++;
+    self.downloadButton.enabled = count > 0;
+    [self.downloadButton setTitle:[NSString stringWithFormat:@"Baixar (%ld)", (long)count] forState:UIControlStateNormal];
+}
+
+- (void)downloadSelected {
+    NSMutableArray<SCUIPatchDLItem *> *toDownload = [NSMutableArray array];
+    for (SCUIPatchDLItem *it in self.items) if (it.selected) [toDownload addObject:it];
+    if (toDownload.count == 0) return;
+
+    self.pendingDownloads = (NSInteger)toDownload.count;
+    self.completedDownloads = 0;
+    [self.failedDownloads removeAllObjects];
+    self.downloadButton.enabled = NO;
+    self.exportButton.enabled = NO;
+
+    for (SCUIPatchDLItem *it in toDownload) [self downloadItem:it];
+}
+
+- (void)downloadItem:(SCUIPatchDLItem *)item {
+    if (item.downloadUrl.length == 0) { [self itemFinished:item error:@"URL vazia"]; return; }
+    NSURL *url = [NSURL URLWithString:item.downloadUrl];
+    if (!url) { [self itemFinished:item error:@"URL inválida"]; return; }
+
+    [[[NSURLSession sharedSession] downloadTaskWithURL:url
+        completionHandler:^(NSURL *location, NSURLResponse *response, NSError *error) {
+        if (error) { [self itemFinished:item error:error.localizedDescription]; return; }
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSURL *docs = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+        NSURL *dir = [docs URLByAppendingPathComponent:@"patches" isDirectory:YES];
+        [fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *fname = item.fileName.length ? item.fileName : [NSString stringWithFormat:@"patch-%@.3105", item.versionId];
+        NSURL *dst = [dir URLByAppendingPathComponent:fname];
+        [fm removeItemAtURL:dst error:nil];
+        NSError *mvErr = nil;
+        [fm moveItemAtURL:location toURL:dst error:&mvErr];
+        if (mvErr) { [self itemFinished:item error:mvErr.localizedDescription]; return; }
+        [self itemFinished:item error:nil];
+    }] resume];
+}
+
+- (void)itemFinished:(SCUIPatchDLItem *)item error:(NSString *)error {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (error.length) {
+            [self.failedDownloads addObject:[NSString stringWithFormat:@"%@: %@", item.title ?: @"?", error]];
+        }
+        self.completedDownloads++;
+        [self setStatus:[NSString stringWithFormat:@"%ld/%ld baixados...", (long)self.completedDownloads, (long)self.pendingDownloads] color:nil];
+        if (self.completedDownloads >= self.pendingDownloads) {
+            self.exportButton.enabled = YES;
+            NSString *msg = [NSString stringWithFormat:@"%ld baixado(s) em Documents/patches/", (long)self.pendingDownloads - (long)self.failedDownloads.count];
+            if (self.failedDownloads.count) msg = [msg stringByAppendingFormat:@"\n\nFalhas:\n%@", [self.failedDownloads componentsJoinedByString:@"\n"]];
+            UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Downloads" message:msg preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:a animated:YES completion:nil];
+        }
+    });
+}
+
+- (void)exportZIP {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSURL *docs = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+    NSURL *dir = [docs URLByAppendingPathComponent:@"patches" isDirectory:YES];
+    if (![fm fileExistsAtPath:dir.path]) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Nada" message:@"Documents/patches/ vazio." preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:a animated:YES completion:nil];
+        return;
+    }
+    NSFileCoordinator *coord = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+    __block NSURL *zipURL = nil;
+    __block NSError *cErr = nil;
+    [coord coordinateReadingItemAtURL:dir options:NSFileCoordinatorReadingForUploading error:&cErr byAccessor:^(NSURL *newURL) {
+        NSURL *out = [[NSURL fileURLWithPath:NSTemporaryDirectory()] URLByAppendingPathComponent:@"Satanabe-Patches.zip"];
+        [fm removeItemAtURL:out error:nil];
+        NSError *cpErr = nil;
+        if ([fm copyItemAtURL:newURL toURL:out error:&cpErr]) zipURL = out;
+        else cErr = cpErr;
+    }];
+    if (!zipURL) {
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Erro" message:cErr.localizedDescription ?: @"Falha ao zipar" preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:a animated:YES completion:nil];
+        return;
+    }
+    UIActivityViewController *share = [[UIActivityViewController alloc] initWithActivityItems:@[zipURL] applicationActivities:nil];
+    if (share.popoverPresentationController) {
+        share.popoverPresentationController.sourceView = self.exportButton;
+        share.popoverPresentationController.sourceRect = self.exportButton.bounds;
+    }
+    [self presentViewController:share animated:YES completion:nil];
 }
 
 @end
