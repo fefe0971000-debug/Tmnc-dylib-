@@ -27,14 +27,9 @@ $(OUT): $(OBJ)
 	xcrun --sdk iphoneos clang++ \
 		-arch arm64 -dynamiclib -fobjc-arc -fblocks \
 		-isysroot "$(SDK)" -miphoneos-version-min=$(MIN_IOS) \
-		-framework Foundation \
-		-framework UIKit \
-		-framework AVFoundation \
-		-framework QuartzCore \
-		-framework CoreGraphics \
-		-framework UniformTypeIdentifiers \
-		-Wl,-install_name,@rpath/$(DYLIB) \
-		-Wl,-dead_strip \
+		-framework Foundation -framework UIKit -framework AVFoundation \
+		-framework QuartzCore -framework CoreGraphics -framework UniformTypeIdentifiers \
+		-Wl,-install_name,@rpath/$(DYLIB) -Wl,-dead_strip \
 		$(OBJ) -o $(OUT)
 
 inspect: diagnose $(OUT)
