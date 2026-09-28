@@ -1,35 +1,11 @@
-DYLIB := SatanabeCleanUI.dylib
-BUILD := build
-SRC := Source/SatanabeCleanUI.mm
-OBJ := $(BUILD)/SatanabeCleanUI.o
-OUT := $(BUILD)/$(DYLIB)
-MIN_IOS ?= 15.0
-SDK := $(shell xcrun --sdk iphoneos --show-sdk-path)
+TARGET := iphone:clang:latest:14.0
+ARCHS  := arm64 arm64e
 
-.PHONY: all clean inspect diagnose
-all: $(OUT)
+include $(THEOS)/makefiles/common.mk
 
-$(BUILD):
-	mkdir -p $(BUILD)
+LIBRARY_NAME = SatanabeCleanUI
+SatanabeCleanUI_FILES      = SatanabeCleanUI.mm
+SatanabeCleanUI_FRAMEWORKS = UIKit Foundation AVFoundation QuartzCore CoreGraphics UniformTypeIdentifiers
+SatanabeCleanUI_CFLAGS     = -fobjc-arc -fmodules -O2
 
-$(OBJ): $(SRC) | $(BUILD)
-	xcrun --sdk iphoneos clang++ -arch arm64 -c -fobjc-arc -fblocks -fmodules -std=c++17 -O2 \
-	  -isysroot "$(SDK)" -miphoneos-version-min=$(MIN_IOS) $(SRC) -o $(OBJ)
-
-diagnose: $(OBJ)
-	xcrun nm -u $(OBJ) | sort || true
-
-$(OUT): $(OBJ)
-	xcrun --sdk iphoneos clang++ -arch arm64 -dynamiclib -fobjc-arc -fblocks \
-	  -isysroot "$(SDK)" -miphoneos-version-min=$(MIN_IOS) \
-	  -framework Foundation -framework UIKit -framework AVFoundation \
-	  -framework QuartzCore -framework CoreGraphics -framework UniformTypeIdentifiers \
-	  -Wl,-install_name,@rpath/$(DYLIB) -Wl,-dead_strip $(OBJ) -o $(OUT)
-
-inspect: diagnose $(OUT)
-	file $(OUT)
-	xcrun lipo $(OUT) -verify_arch arm64
-	xcrun otool -L $(OUT)
-
-clean:
-	rm -rf $(BUILD)
+include $(THEOS_MAKE_PATH)/library.mk
