@@ -867,7 +867,6 @@ static void SCUIInstallBackendRouter(void) {
 @end
 
 @interface SCUIPatchDownloaderVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
-@property(nonatomic, strong) UITextField *keyField;
 @property(nonatomic, strong) UIButton *loadButton;
 @property(nonatomic, strong) UIButton *downloadButton;
 @property(nonatomic, strong) UIButton *exportButton;
@@ -877,6 +876,7 @@ static void SCUIInstallBackendRouter(void) {
 @property(nonatomic, assign) NSInteger pendingDownloads;
 @property(nonatomic, assign) NSInteger completedDownloads;
 @property(nonatomic, strong) NSMutableArray<NSString *> *failedDownloads;
+@property(nonatomic, assign) BOOL didAutoLoadCatalog;
 @end
 
 #pragma mark - SCUIManager implementation
@@ -1557,17 +1557,8 @@ static void SCUIInstallBackendRouter(void) {
     self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemClose target:self action:@selector(closePressed)];
 
-    self.keyField = [UITextField new];
-    self.keyField.placeholder = @"Cole a key aqui";
-    self.keyField.borderStyle = UITextBorderStyleRoundedRect;
-    self.keyField.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
-    self.keyField.autocorrectionType = UITextAutocorrectionTypeNo;
-    self.keyField.translatesAutoresizingMaskIntoConstraints = NO;
-    self.keyField.text = SCUIPrefs()[@"patchDownloaderKey"] ?: @"";
-    [self.view addSubview:self.keyField];
-
     self.loadButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.loadButton setTitle:@"Carregar catálogo" forState:UIControlStateNormal];
+    [self.loadButton setTitle:@"Atualizar catálogo" forState:UIControlStateNormal];
     self.loadButton.backgroundColor = UIColor.systemBlueColor;
     [self.loadButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     self.loadButton.layer.cornerRadius = 10;
@@ -1577,7 +1568,7 @@ static void SCUIInstallBackendRouter(void) {
     [self.view addSubview:self.loadButton];
 
     self.statusLabel = [UILabel new];
-    self.statusLabel.text = @"Digite a key e toque em Carregar.";
+    self.statusLabel.text = @"Catálogo protegido: usando a key já validada.";
     self.statusLabel.textAlignment = NSTextAlignmentCenter;
     self.statusLabel.numberOfLines = 0;
     self.statusLabel.font = [UIFont systemFontOfSize:13];
@@ -1620,12 +1611,7 @@ static void SCUIInstallBackendRouter(void) {
     [bar addSubview:self.exportButton];
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.keyField.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
-        [self.keyField.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
-        [self.keyField.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
-        [self.keyField.heightAnchor constraintEqualToConstant:40],
-
-        [self.loadButton.topAnchor constraintEqualToAnchor:self.keyField.bottomAnchor constant:8],
+        [self.loadButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
         [self.loadButton.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
         [self.loadButton.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
         [self.loadButton.heightAnchor constraintEqualToConstant:40],
@@ -1658,6 +1644,14 @@ static void SCUIInstallBackendRouter(void) {
 
 - (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (!self.didAutoLoadCatalog && [SCUIPrefs()[@"patchDownloaderKey"] length] > 0) {
+        self.didAutoLoadCatalog = YES;
+        [self loadCatalog];
+    }
+}
+
 - (void)setStatus:(NSString *)text color:(UIColor *)color {
     dispatch_async(dispatch_get_main_queue(), ^{
         self.statusLabel.text = text ?: @"";
@@ -1666,8 +1660,11 @@ static void SCUIInstallBackendRouter(void) {
 }
 
 - (void)loadCatalog {
-    NSString *key = [self.keyField.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
-    if (key.length == 0) { [self setStatus:@"Digite a key primeiro." color:UIColor.systemRedColor]; return; }
+    NSString *key = [SCUIPrefs()[@"patchDownloaderKey"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
+    if (key.length == 0) {
+        [self setStatus:@"Nenhuma key validada foi encontrada neste app." color:UIColor.systemRedColor];
+        return;
+    }
 
     NSMutableDictionary *p = SCUIPrefs();
     p[@"patchDownloaderKey"] = key;
@@ -1687,7 +1684,15 @@ static void SCUIInstallBackendRouter(void) {
     req.HTTPMethod = @"POST";
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     NSString *deviceId = UIDevice.currentDevice.identifierForVendor.UUIDString ?: @"LOCAL-DEVICE";
-    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{@"key": key, @"deviceId": deviceId} options:0 error:nil];
+    NSString *package = NSBundle.mainBundle.bundleIdentifier ?: @"";
+    NSString *appVersion = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
+    if (appVersion.length == 0) appVersion = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"";
+    req.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{
+        @"key": key,
+        @"device_id": deviceId,
+        @"package": package,
+        @"app_version": appVersion
+    } options:0 error:nil];
 
     NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.defaultSessionConfiguration;
     cfg.timeoutIntervalForRequest = 15.0;
