@@ -399,7 +399,7 @@ static NSString *SCUIValidationResultFromData(NSData *data, NSInteger statusCode
         id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
         NSNumber *valid = SCUIFindBoolForKeys(json, [NSSet setWithArray:@[@"valid", @"success", @"ok", @"authorized", @"active"]]);
         if (valid) return valid.boolValue ? @"VALID" : @"INVALID";
-       NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].lowercaseString;
+        NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].lowercaseString;
         if ([text containsString:@"invalid"] || [text containsString:@"inválid"] ||
             [text containsString:@"expired"] || [text containsString:@"expirad"] ||
             [text containsString:@"revoked"] || [text containsString:@"revogad"]) return @"INVALID";
@@ -522,7 +522,7 @@ static void SCUIAddLoggerProtocolToConfiguration(NSURLSessionConfiguration *cfg)
     if (![classes containsObject:SCUIAPILoggerProtocol.class]) [classes addObject:SCUIAPILoggerProtocol.class];
     cfg.protocolClasses = classes;
 }
-    
+
 #pragma mark - Local License Test Mode
 
 static BOOL SCUILocalLicenseBypassEnabled(void) {
@@ -725,9 +725,9 @@ static void SCUIInstallBackendRouter(void) {
         SCUISwizzle(cls, @selector(uploadTaskWithRequest:fromData:completionHandler:), @selector(scui_uploadTaskWithRequest:fromData:completionHandler:));
     });
 }
-    
+
 @class SCUIOverlay;
-@class SCUIPatchDownloaderVC;
+@class SCUIPatchDLItem;
 
 @interface SCUIManager : NSObject
 @property(nonatomic, strong) NSMutableDictionary *prefs;
@@ -741,23 +741,6 @@ static void SCUIInstallBackendRouter(void) {
 - (void)apply;
 - (void)reloadCustomVideo;
 - (NSURL *)customVideoURL;
-@end
-
-@interface SCUIOverlay : UIView <UIDocumentPickerDelegate, UIColorPickerViewControllerDelegate>
-@property(nonatomic, strong) UIButton *bubble;
-@property(nonatomic, strong) UIVisualEffectView *panel;
-@property(nonatomic, strong) UIStackView *stack;
-@property(nonatomic, strong) UISlider *bubbleSizeSlider;
-@property(nonatomic, strong) UISlider *bubbleOpacitySlider;
-@property(nonatomic, strong) UISwitch *hapticsSwitch;
-@property(nonatomic, strong) UISwitch *localLicenseBypassSwitch;
-- (void)refreshControls;
-- (void)showInstalledPatchExporter;
-- (void)showAPILogs;
-- (void)clearAPILogs;
-- (void)shareAllAPILogs;
-- (void)localLicenseBypassChanged:(UISwitch *)sender;
-- (void)scui_patch_openDownloader;
 @end
 
 @interface SCUIPatchCandidate : NSObject
@@ -843,6 +826,34 @@ static void SCUIInstallBackendRouter(void) {
 
 @end
 
+#pragma mark - Patch Downloader (interface)
+
+@interface SCUIPatchDLItem : NSObject
+@property(nonatomic, strong) NSNumber *versionId;
+@property(nonatomic, copy) NSString *title;
+@property(nonatomic, copy) NSString *game;
+@property(nonatomic, copy) NSString *section;
+@property(nonatomic, copy) NSString *fileName;
+@property(nonatomic, strong) NSNumber *sizeBytes;
+@property(nonatomic, copy) NSString *downloadUrl;
+@property(nonatomic, assign) BOOL selected;
+@end
+
+@interface SCUIPatchDownloaderVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
+@property(nonatomic, strong) UITextField *keyField;
+@property(nonatomic, strong) UIButton *loadButton;
+@property(nonatomic, strong) UIButton *downloadButton;
+@property(nonatomic, strong) UIButton *exportButton;
+@property(nonatomic, strong) UILabel *statusLabel;
+@property(nonatomic, strong) UITableView *tableView;
+@property(nonatomic, strong) NSMutableArray<SCUIPatchDLItem *> *items;
+@property(nonatomic, assign) NSInteger pendingDownloads;
+@property(nonatomic, assign) NSInteger completedDownloads;
+@property(nonatomic, strong) NSMutableArray<NSString *> *failedDownloads;
+@end
+
+#pragma mark - SCUIManager implementation
+
 @implementation SCUIManager
 
 + (instancetype)shared {
@@ -915,10 +926,10 @@ static void SCUIInstallBackendRouter(void) {
         BOOL hideHostVideo = !videoEnabled || videoMode == 1;
         SCUISetHostVideosHidden(window, hideHostVideo);
         SCUICustomVideoLayer *custom = nil;
-        for (CALayer *l in self.customLayers) if (l.superlayer == window.layer) { custom = l; break; }
+        for (CALayer *l in self.customLayers) if (l.superlayer == window.layer) { custom = (SCUICustomVideoLayer *)l; break; }
         if (videoEnabled && videoMode == 1 && self.customPlayer) {
             if (!custom) {
-                custom = [SCUICustomVideoLayer playerLayerWithPlayer:self.customPlayer];
+                custom = (SCUICustomVideoLayer *)[SCUICustomVideoLayer playerLayerWithPlayer:self.customPlayer];
                 custom.videoGravity = AVLayerVideoGravityResizeAspectFill;
                 [window.layer insertSublayer:custom atIndex:0];
                 [self.customLayers addObject:custom];
@@ -944,7 +955,36 @@ static void SCUIInstallBackendRouter(void) {
 }
 
 @end
-    
+
+#pragma mark - SCUIOverlay
+
+@interface SCUIOverlay : UIView <UIDocumentPickerDelegate, UIColorPickerViewControllerDelegate>
+@property(nonatomic, strong) UIButton *bubble;
+@property(nonatomic, strong) UIVisualEffectView *panel;
+@property(nonatomic, strong) UIStackView *stack;
+@property(nonatomic, strong) UISlider *bubbleSizeSlider;
+@property(nonatomic, strong) UISlider *bubbleOpacitySlider;
+@property(nonatomic, strong) UISwitch *hapticsSwitch;
+@property(nonatomic, strong) UISwitch *localLicenseBypassSwitch;
+- (void)refreshControls;
+- (void)showInstalledPatchExporter;
+- (void)showAPILogs;
+- (void)clearAPILogs;
+- (void)shareAllAPILogs;
+- (void)localLicenseBypassChanged:(UISwitch *)sender;
+- (void)scui_patch_openDownloader;
+- (UIViewController *)scuiTopController;
+- (NSString *)scuiSanitizedRelativePath:(NSString *)input;
+- (NSString *)scuiDisplayLocationForURL:(NSURL *)url;
+- (BOOL)scuiFileHas3105Magic:(NSURL *)url;
+- (NSString *)scuiFirstStringForKeys:(NSArray<NSString *> *)keys inObject:(id)obj;
+- (void)scuiCollectPathHintsFromObject:(id)obj prefix:(NSString *)prefix output:(NSMutableArray<NSString *> *)out;
+- (NSArray<SCUIPatchCandidate *> *)scuiDiscoverPatchCandidates;
+- (NSURL *)scuiPrepareCandidateForSharing:(SCUIPatchCandidate *)item error:(NSError **)error;
+- (void)shareItems:(NSArray *)items fromView:(UIView *)view;
+- (void)shareLogDictionary:(NSDictionary *)log;
+@end
+
 @implementation SCUIOverlay
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -1173,7 +1213,7 @@ static void SCUIInstallBackendRouter(void) {
 - (void)scui_patch_openDownloader {
     UIViewController *top = self.window.rootViewController;
     while (top.presentedViewController) top = top.presentedViewController;
-    SCUIPatchDownloaderVC *vc = [SCUIPatchDownloaderVC new];
+    SCUIPatchDownloaderVC *vc = [[SCUIPatchDownloaderVC alloc] init];
     UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
     nav.modalPresentationStyle = UIModalPresentationPageSheet;
     [top presentViewController:nav animated:YES completion:nil];
@@ -1200,7 +1240,7 @@ static void SCUIInstallBackendRouter(void) {
     SCUIManager.shared.prefs[@"localLicenseBypass"] = @(sender.on);
     SCUISave(SCUIManager.shared.prefs);
 }
-   
+
 - (UIViewController *)scuiTopController {
     UIViewController *vc = self.window.rootViewController;
     while (vc.presentedViewController) vc = vc.presentedViewController;
@@ -1482,18 +1522,8 @@ static void SCUIInstallBackendRouter(void) {
 
 @end
 
-#pragma mark - Patch Downloader (com key)
+#pragma mark - Patch Downloader implementation
 
-@interface SCUIPatchDLItem : NSObject
-@property(nonatomic, strong) NSNumber *versionId;
-@property(nonatomic, copy) NSString *title;
-@property(nonatomic, copy) NSString *game;
-@property(nonatomic, copy) NSString *section;
-@property(nonatomic, copy) NSString *fileName;
-@property(nonatomic, strong) NSNumber *sizeBytes;
-@property(nonatomic, copy) NSString *downloadUrl;
-@property(nonatomic, assign) BOOL selected;
-@end
 @implementation SCUIPatchDLItem
 + (instancetype)fromDict:(NSDictionary *)d {
     if (![d isKindOfClass:NSDictionary.class]) return nil;
@@ -1508,19 +1538,6 @@ static void SCUIInstallBackendRouter(void) {
     it.selected = NO;
     return it;
 }
-@end
-
-@interface SCUIPatchDownloaderVC : UIViewController <UITableViewDataSource, UITableViewDelegate>
-@property(nonatomic, strong) UITextField *keyField;
-@property(nonatomic, strong) UIButton *loadButton;
-@property(nonatomic, strong) UIButton *downloadButton;
-@property(nonatomic, strong) UIButton *exportButton;
-@property(nonatomic, strong) UILabel *statusLabel;
-@property(nonatomic, strong) UITableView *tableView;
-@property(nonatomic, strong) NSMutableArray<SCUIPatchDLItem *> *items;
-@property(nonatomic, assign) NSInteger pendingDownloads;
-@property(nonatomic, assign) NSInteger completedDownloads;
-@property(nonatomic, strong) NSMutableArray<NSString *> *failedDownloads;
 @end
 
 @implementation SCUIPatchDownloaderVC
