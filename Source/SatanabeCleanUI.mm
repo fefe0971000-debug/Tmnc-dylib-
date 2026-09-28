@@ -399,10 +399,7 @@ static NSString *SCUIValidationResultFromData(NSData *data, NSInteger statusCode
         id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
         NSNumber *valid = SCUIFindBoolForKeys(json, [NSSet setWithArray:@[@"valid", @"success", @"ok", @"authorized", @"active"]]);
         if (valid) return valid.boolValue ? @"VALID" : @"INVALID";
-        NSString *text nil = [[NSString alloc;
-] initWithData:}
-
-data encoding:NSstaticUTF8String NSEncoding].lowercaseString;
+       NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].lowercaseString;
         if ([text containsString:@"invalid"] || [text containsString:@"inválid"] ||
             [text containsString:@"expired"] || [text containsString:@"expirad"] ||
             [text containsString:@"revoked"] || [text containsString:@"revogad"]) return @"INVALID";
@@ -410,7 +407,10 @@ data encoding:NSstaticUTF8String NSEncoding].lowercaseString;
             [text containsString:@"authorized"] || [text containsString:@"success"]) return @"VALID";
     }
     if (statusCode == 401 || statusCode == 403 || statusCode == 422) return @"INVALID";
-    returnDictionary *SCUILatestAPILog(void) {
+    return nil;
+}
+
+static NSDictionary *SCUILatestAPILog(void) {
     return SCUIReadAPILogs().lastObject;
 }
 
