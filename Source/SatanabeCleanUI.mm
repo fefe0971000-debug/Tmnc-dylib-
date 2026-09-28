@@ -294,29 +294,37 @@ static NSString *SCUIPrettyLog(NSDictionary *log) {
 
 static void SCUICollectURLsFromFile(NSString *path, NSMutableOrderedSet<NSString *> *urls) {
     if (!path.length || !urls) return;
-    NSData *data = [NSData dataWithContentsOfFile:path options:NSDataReadingMappedIfSafe error:nil];
+
+    NSData *data = [NSData dataWithContentsOfFile:path
+                                          options:NSDataReadingMappedIfSafe
+                                            error:NULL];
     if (!data.length) return;
 
-    NSString *blob = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    NSString *blob = [[NSString alloc] initWithData:data
+                                           encoding:NSISOLatin1StringEncoding];
     if (!blob.length) return;
 
+    NSError *regexError = nil;
     NSRegularExpression *regex =
         [NSRegularExpression regularExpressionWithPattern:@"https?://[^\\\\x00\\\\s\\\"'<>]+"
                                                   options:NSRegularExpressionCaseInsensitive
-                                                    error:nil];
-    if (!regex) return;
+                                                    error:&regexError];
+    if (!regex || regexError) return;
 
-    [regex enumerateMatchesInString:blob options:0 range:NSMakeRange(0, blob.length)
-                         usingBlock:^(NSTextCheckingResult *result, NSMatchingFlags flags, BOOL *stop) {
-        if (!result || result.range.location == NSNotFound) return;
+    NSArray<NSTextCheckingResult *> *matches =
+        [regex matchesInString:blob options:0 range:NSMakeRange(0, blob.length)];
+
+    for (NSTextCheckingResult *result in matches) {
+        if (!result || result.range.location == NSNotFound) continue;
         NSString *value = [blob substringWithRange:result.range];
-        while ([value hasSuffix:@"."] || [value hasSuffix:@","] ||
-               [value hasSuffix:@")"] || [value hasSuffix:@"]"] ||
-               [value hasSuffix:@"}"]) {
+        while (value.length &&
+               ([value hasSuffix:@"."] || [value hasSuffix:@","] ||
+                [value hasSuffix:@")"] || [value hasSuffix:@"]"] ||
+                [value hasSuffix:@"}"])) {
             value = [value substringToIndex:value.length - 1];
         }
         if (value.length) [urls addObject:value];
-    }];
+    }
 }
 
 static NSArray<NSString *> *SCUIStaticURLInventory(void) {
@@ -375,7 +383,7 @@ static NSString *SCUILicenseKeyFromRequest(NSURLRequest *request) {
     NSSet *wanted = [NSSet setWithArray:@[@"key", @"licensekey", @"license_key", @"license", @"code", @"activationkey", @"activation_key"]];
 
     if (request.HTTPBody.length) {
-        id json = [NSJSONSerialization JSONObjectWithData:request.HTTPBody options:0 error:nil];
+        id json = [NSJSONSerialization JSONObjectWithData:request.HTTPBody options:0 error:NULL];
         NSString *hit = SCUIFindStringForKeys(json, wanted);
         if (hit.length) return hit;
 
@@ -427,7 +435,7 @@ static NSNumber *SCUIFindBoolForKeys(id obj, NSSet<NSString *> *wanted) {
 
 static NSString *SCUIValidationResultFromData(NSData *data, NSInteger statusCode) {
     if (data.length) {
-        id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+        id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
         NSNumber *valid = SCUIFindBoolForKeys(json, [NSSet setWithArray:@[@"valid", @"success", @"ok", @"authorized", @"active"]]);
         if (valid) return valid.boolValue ? @"VALID" : @"INVALID";
 
@@ -544,7 +552,7 @@ didReceiveResponse:(NSURLResponse *)response
     if (validation.length) responseLog[@"validationResult"] = validation;
 
     if (self.responseData.length) {
-        id responseJSON = [NSJSONSerialization JSONObjectWithData:self.responseData options:0 error:nil];
+        id responseJSON = [NSJSONSerialization JSONObjectWithData:self.responseData options:0 error:NULL];
         if ([responseJSON isKindOfClass:NSDictionary.class]) {
             NSDictionary *dict = (NSDictionary *)responseJSON;
             id message = dict[@"message"] ?: dict[@"error"] ?: dict[@"detail"];
@@ -1753,68 +1761,91 @@ static void SCUIInstallBackendRouter(void) {
     [self shareItems:@[SCUIPrettyLog(log) ?: @""] fromView:self.window];
 }
 
+- (void)showAPILogAtIndex:(NSInteger)index logs:(NSArray<NSDictionary *> *)logs {
+    if (!logs.count || index < 0 || index >= (NSInteger)logs.count) return;
+
+    NSDictionary *log = logs[(NSUInteger)index];
+    NSString *event = [log[@"event"] description] ?: @"log";
+    NSString *method = [log[@"method"] description] ?: @"";
+    NSString *url = [log[@"url"] description] ?: @"";
+    NSString *status = log[@"status"] ? [NSString stringWithFormat:@"HTTP %@", log[@"status"]] : @"";
+    NSString *validation = [log[@"validationResult"] description] ?: @"";
+    NSString *licenseKey = [log[@"licenseKey"] description] ?: @"";
+    NSString *serverMessage = [log[@"serverMessage"] description] ?: @"";
+    NSString *body = [log[@"body"] description] ?: @"";
+    if (body.length > 1600) body = [[body substringToIndex:1600] stringByAppendingString:@"…"];
+
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:[NSString stringWithFormat:@"%@ %@", event.uppercaseString, method]];
+    if (url.length) [lines addObject:url];
+    if (status.length) [lines addObject:status];
+    if (validation.length) [lines addObject:[NSString stringWithFormat:@"VALIDAÇÃO: %@", validation]];
+    if (licenseKey.length) [lines addObject:[NSString stringWithFormat:@"KEY: %@", licenseKey]];
+    if (serverMessage.length) [lines addObject:[NSString stringWithFormat:@"SERVIDOR: %@", serverMessage]];
+    if (body.length) {
+        [lines addObject:@""];
+        [lines addObject:body];
+    }
+
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:
+            [NSString stringWithFormat:@"API Log %ld/%lu",
+             (long)(index + 1), (unsigned long)logs.count]
+                                            message:[lines componentsJoinedByString:@"\n"]
+                                     preferredStyle:UIAlertControllerStyleAlert];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Compartilhar este log"
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(__unused UIAlertAction *action) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        [strongSelf shareLogDictionary:log];
+    }]];
+
+    if (index > 0) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"Anterior"
+                                                 style:UIAlertActionStyleDefault
+                                               handler:^(__unused UIAlertAction *action) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            [strongSelf showAPILogAtIndex:index - 1 logs:logs];
+        }]];
+    }
+
+    if (index + 1 < (NSInteger)logs.count) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"Próximo"
+                                                 style:UIAlertActionStyleDefault
+                                               handler:^(__unused UIAlertAction *action) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            [strongSelf showAPILogAtIndex:index + 1 logs:logs];
+        }]];
+    }
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"Fechar"
+                                             style:UIAlertActionStyleCancel
+                                           handler:nil]];
+    [[self scuiTopController] presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)showAPILogs {
-    NSArray<NSDictionary *> *logs = SCUIReadAPILogs();
-    if (!logs.count) {
-        UIAlertController *empty = [UIAlertController alertControllerWithTitle:@"API Logger"
-            message:@"Nenhuma requisição HTTP/HTTPS registrada ainda."
-            preferredStyle:UIAlertControllerStyleAlert];
-        [empty addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    NSArray<NSDictionary *> *allLogs = SCUIReadAPILogs();
+    if (!allLogs.count) {
+        UIAlertController *empty =
+            [UIAlertController alertControllerWithTitle:@"API Logger"
+                                                message:@"Nenhuma requisição HTTP/HTTPS registrada ainda."
+                                         preferredStyle:UIAlertControllerStyleAlert];
+        [empty addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                 style:UIAlertActionStyleDefault
+                                               handler:nil]];
         [[self scuiTopController] presentViewController:empty animated:YES completion:nil];
         return;
     }
 
-    NSArray *slice = logs.count > 20 ? [logs subarrayWithRange:NSMakeRange(logs.count - 20, 20)] : logs;
-    __block NSInteger index = (NSInteger)slice.count - 1;
-    __block void (^showOne)(void) = nil;
-    __weak typeof(self) weakSelf = self;
+    NSArray<NSDictionary *> *logs =
+        allLogs.count > 20
+        ? [allLogs subarrayWithRange:NSMakeRange(allLogs.count - 20, 20)]
+        : allLogs;
 
-    showOne = ^{
-        __strong typeof(weakSelf) self = weakSelf;
-        if (!self || index < 0) return;
-        NSDictionary *log = slice[(NSUInteger)index];
-        NSString *event = [log[@"event"] description] ?: @"log";
-        NSString *method = [log[@"method"] description] ?: @"";
-        NSString *url = [log[@"url"] description] ?: @"";
-        NSString *status = log[@"status"] ? [NSString stringWithFormat:@"HTTP %@", log[@"status"]] : @"";
-        NSString *validation = [log[@"validationResult"] description] ?: @"";
-        NSString *licenseKey = [log[@"licenseKey"] description] ?: @"";
-        NSString *body = [log[@"body"] description] ?: @"";
-        if (body.length > 1600) body = [[body substringToIndex:1600] stringByAppendingString:@"…"];
-
-        NSMutableArray<NSString *> *lines = [NSMutableArray array];
-        [lines addObject:[NSString stringWithFormat:@"%@ %@", event.uppercaseString, method]];
-        [lines addObject:url];
-        if (status.length) [lines addObject:status];
-        if (validation.length) [lines addObject:[NSString stringWithFormat:@"VALIDAÇÃO: %@", validation]];
-        if (licenseKey.length) [lines addObject:[NSString stringWithFormat:@"KEY: %@", licenseKey]];
-        if (body.length) {
-            [lines addObject:@""];
-            [lines addObject:body];
-        }
-        NSString *message = [lines componentsJoinedByString:@"\n"];
-
-        UIAlertController *a = [UIAlertController alertControllerWithTitle:
-            [NSString stringWithFormat:@"API Log %ld/%lu", (long)(index + 1), (unsigned long)slice.count]
-            message:message preferredStyle:UIAlertControllerStyleAlert];
-
-        [a addAction:[UIAlertAction actionWithTitle:@"Compartilhar este log"
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(__unused UIAlertAction *action) {
-            [self shareLogDictionary:log];
-        }]];
-        if (index > 0) {
-            [a addAction:[UIAlertAction actionWithTitle:@"Anterior"
-                                                 style:UIAlertActionStyleDefault
-                                               handler:^(__unused UIAlertAction *action) {
-                index--;
-                dispatch_async(dispatch_get_main_queue(), showOne);
-            }]];
-        }
-        [a addAction:[UIAlertAction actionWithTitle:@"Fechar" style:UIAlertActionStyleCancel handler:nil]];
-        [[self scuiTopController] presentViewController:a animated:YES completion:nil];
-    };
-    showOne();
+    [self showAPILogAtIndex:(NSInteger)logs.count - 1 logs:logs];
 }
 
 - (void)scanStaticAPIURLs {
@@ -1975,8 +2006,6 @@ static void SCUIInstallBackendRouter(void) {
 
 @end
 
-__attribute__((constructor))
-
 #pragma mark - Share latest API log from pop-ups
 
 @interface UIViewController (SCUIAPILogShare)
@@ -2027,6 +2056,7 @@ static void SCUIInstallAlertShareHook(void) {
     });
 }
 
+__attribute__((constructor))
 static void SCUIStart(void) {
     SCUIInstallAlertShareHook();
     SCUIInstallAPILogger();
