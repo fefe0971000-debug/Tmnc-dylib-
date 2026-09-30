@@ -1,0 +1,5 @@
+Runtime report 2026-09-30 00:15:34 +0000
+loaded images: 1242
+main image: /private/var/containers/Bundle/Application/FF843A7A-07CE-44C4-846C-948448C6D202/Spotify.app/Spotify
+inspector window: 0x13d71f800
+host window: 0x1107d03e0
