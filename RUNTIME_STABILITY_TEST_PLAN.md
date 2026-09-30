@@ -10,7 +10,7 @@ The diagnostic build uses the following architecture:
 2. Overlay creation occurs only after the host app has had time to construct its foreground scene.
 3. Passive startup runs for 120 seconds with no runtime polling, object traversal, hooks, dump, screenshot, or automatic capture.
 4. User-started lightweight warm-up polls only `objc_getClassList(NULL, 0)` and `_dyld_image_count()` every approximately 5 seconds for 120 seconds.
-5. Only after lightweight warm-up is stable are individual manual legacy collectors exposed.
+5. Only after the 120-second minimum and 6 consecutive stable post-minimum checks are complete are individual manual legacy collectors exposed.
 6. `EXPORT ALL RUNTIME` remains disabled in this diagnostic build.
 
 ## Build identity

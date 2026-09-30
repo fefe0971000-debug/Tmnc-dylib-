@@ -9,7 +9,7 @@ This revision is a **stability-first diagnostic build**. Compilation is verified
 - [PASS] Session startup no longer captures a view/controller snapshot or screenshot automatically
 - [PASS] Automatic application-active capture observation removed from SessionCapture startup
 - [PASS] Passive startup test runs for 120 seconds with no polling, runtime enumeration, dump, hooks, screenshot, or object traversal
-- [PASS] Lightweight warm-up is user-started and runs for 120 seconds
+- [PASS] Lightweight warm-up is user-started, runs for a 120-second minimum, and requires 6 consecutive stable post-minimum checks
 - [PASS] Lightweight polling collects only `objc_getClassList(NULL, 0)` and `_dyld_image_count()` every approximately 5 seconds
 - [PASS] Heavy controls are locked until lightweight warm-up is stable
 - [PASS] `EXPORT ALL RUNTIME` is disabled in this diagnostic build

@@ -20,6 +20,7 @@ static const BOOL kDiagnosticStabilityBuild = YES;
 static const NSTimeInterval kPassiveStartupSeconds = 120.0;
 static const NSTimeInterval kLightweightWarmupSeconds = 120.0;
 static const NSTimeInterval kLightweightSampleInterval = 5.0;
+static const NSUInteger kRequiredLightweightStableChecks = 6;
 static const NSUInteger kFullCaptureMaxDepth = 256;
 static const NSUInteger kFullCaptureMaxNodes = 500000;
 static const NSUInteger kSnapshotMaxDepth = 256;
@@ -423,6 +424,11 @@ static void SessionControllerSnapshot(UIViewController *controller, NSUInteger d
 @property(nonatomic) BOOL passiveTestComplete;
 @property(nonatomic) BOOL lightweightWarmupActive;
 @property(nonatomic) BOOL lightweightWarmupStable;
+@property(nonatomic) BOOL lightweightMinimumReached;
+@property(nonatomic) NSUInteger lightweightStableChecks;
+@property(nonatomic) int lightweightPreviousClassCount;
+@property(nonatomic) uint32_t lightweightPreviousImageCount;
+@property(nonatomic) BOOL lightweightHasPreviousSample;
 @property(nonatomic,strong) NSTimer *stabilityTimer;
 @property(nonatomic,strong) NSTimer *lightweightWarmupTimer;
 @property(nonatomic,strong) NSString *lastPhase;
@@ -592,7 +598,7 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
 - (void)showDiagnosticStatus {
     NSTimeInterval passiveElapsed = self.passiveStarted > 0 ? CACurrentMediaTime() - self.passiveStarted : 0;
     NSTimeInterval warmupElapsed = self.lightweightWarmupStarted > 0 ? CACurrentMediaTime() - self.lightweightWarmupStarted : 0;
-    NSString *message = [NSString stringWithFormat:@"PASSIVE STARTUP TEST\nElapsed: %.1fs / %.0fs\nPassive stable: %@\n\nLIGHTWEIGHT WARM-UP\nElapsed: %.1fs / %.0fs\nActive: %@\nStable: %@\n\nNo automatic full capture is enabled in this diagnostic build.\nLAST_OPERATION.txt, HEARTBEAT.txt, MEMORY_LOG.txt, and WARMUP_SAMPLES.txt are written under %@.", passiveElapsed, kPassiveStartupSeconds, self.passiveTestComplete ? @"YES" : @"NO", warmupElapsed, kLightweightWarmupSeconds, self.lightweightWarmupActive ? @"YES" : @"NO", self.lightweightWarmupStable ? @"YES" : @"NO", ReportsDirectory().path];
+    NSString *message = [NSString stringWithFormat:@"PASSIVE STARTUP TEST\nElapsed: %.1fs / %.0fs\nPassive stable: %@\n\nLIGHTWEIGHT WARM-UP\nElapsed: %.1fs / %.0fs\nMinimum reached: %@\nActive: %@\nClass count: %d\nImage count: %u\nStable: %@\nStable checks: %lu / %lu\n\nNo automatic full capture is enabled in this diagnostic build.\nLAST_OPERATION.txt, HEARTBEAT.txt, MEMORY_LOG.txt, and WARMUP_SAMPLES.txt are written under %@.", passiveElapsed, kPassiveStartupSeconds, self.passiveTestComplete ? @"YES" : @"NO", warmupElapsed, self.lightweightMinimumReached ? @"YES" : @"NO", self.lightweightWarmupActive ? @"YES" : @"NO", self.lightweightPreviousClassCount, self.lightweightPreviousImageCount, self.lightweightWarmupStable ? @"YES" : @"NO", (unsigned long)self.lightweightStableChecks, (unsigned long)kRequiredLightweightStableChecks, ReportsDirectory().path];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Stability Diagnostic" message:message preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]]; [[self presenter] presentViewController:alert animated:YES completion:nil];
 }
 
@@ -610,7 +616,7 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
 - (void)startLightweightWarmup {
     if (!self.passiveTestComplete) { [self showDiagnosticStatus]; return; }
     if (self.lightweightWarmupActive || self.lightweightWarmupStable) return;
-    self.lightweightWarmupActive = YES; self.lightweightWarmupStarted = CACurrentMediaTime(); UIISetLastOperation(@"WARMUP_SAMPLE_BEGIN"); UIIWriteCrashRecoveryState(@"LIGHTWEIGHT_WARMUP", @"running", nil, nil); WriteTextURL([ReportsDirectory() URLByAppendingPathComponent:@"WARMUP_SAMPLES.txt"], @"LIGHTWEIGHT WARM-UP SAMPLES\nOnly objc_getClassList(NULL, 0) and _dyld_image_count() are collected.\n"); self.lightweightWarmupTimer = [NSTimer scheduledTimerWithTimeInterval:kLightweightSampleInterval target:self selector:@selector(lightweightWarmupTick) userInfo:nil repeats:YES]; [self lightweightWarmupTick];
+    self.lightweightWarmupActive = YES; self.lightweightWarmupStarted = CACurrentMediaTime(); self.lightweightMinimumReached = NO; self.lightweightStableChecks = 0; self.lightweightHasPreviousSample = NO; UIISetLastOperation(@"WARMUP_SAMPLE_BEGIN"); UIIWriteCrashRecoveryState(@"LIGHTWEIGHT_WARMUP", @"running", nil, nil); WriteTextURL([ReportsDirectory() URLByAppendingPathComponent:@"WARMUP_SAMPLES.txt"], @"LIGHTWEIGHT WARM-UP SAMPLES\nOnly objc_getClassList(NULL, 0) and _dyld_image_count() are collected.\nMinimum warm-up: 120 seconds.\nStable gate: 6 consecutive post-minimum checks with unchanged class/image counts.\n"); self.lightweightWarmupTimer = [NSTimer scheduledTimerWithTimeInterval:kLightweightSampleInterval target:self selector:@selector(lightweightWarmupTick) userInfo:nil repeats:YES]; [self lightweightWarmupTick];
 }
 
 - (void)lightweightWarmupTick {
@@ -621,10 +627,14 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     uint32_t imageCount = _dyld_image_count();
     UIISetLastOperation(@"WARMUP_IMAGE_COUNT_END");
     NSTimeInterval elapsed = CACurrentMediaTime() - self.lightweightWarmupStarted;
-    AppendFileURL([ReportsDirectory() URLByAppendingPathComponent:@"WARMUP_SAMPLES.txt"], [NSString stringWithFormat:@"timestamp=%@ elapsed=%.1f classCount=%d imageCount=%u\n", DateString([NSDate date]), elapsed, classCount, imageCount]);
+    if (!self.lightweightMinimumReached && elapsed >= kLightweightWarmupSeconds) { self.lightweightMinimumReached = YES; self.lightweightStableChecks = 0; self.lightweightHasPreviousSample = NO; }
+    BOOL countsStable = self.lightweightMinimumReached && self.lightweightHasPreviousSample && classCount == self.lightweightPreviousClassCount && imageCount == self.lightweightPreviousImageCount;
+    if (self.lightweightMinimumReached) self.lightweightStableChecks = countsStable ? self.lightweightStableChecks + 1 : 0;
+    self.lightweightPreviousClassCount = classCount; self.lightweightPreviousImageCount = imageCount; self.lightweightHasPreviousSample = YES;
+    AppendFileURL([ReportsDirectory() URLByAppendingPathComponent:@"WARMUP_SAMPLES.txt"], [NSString stringWithFormat:@"timestamp=%@ elapsed=%.1f classCount=%d imageCount=%u minimumReached=%@ countsStable=%@ stableChecks=%lu/%lu\n", DateString([NSDate date]), elapsed, classCount, imageCount, self.lightweightMinimumReached ? @"YES" : @"NO", countsStable ? @"YES" : @"NO", (unsigned long)self.lightweightStableChecks, (unsigned long)kRequiredLightweightStableChecks]);
     UIIRecordMemoryTelemetry(@"LIGHTWEIGHT_WARMUP"); UIIWriteHeartbeat(@"LIGHTWEIGHT_WARMUP");
-    self.button.accessibilityValue = [NSString stringWithFormat:@"LIGHTWEIGHT WARM-UP; %.0f seconds; class count %d; image count %u", elapsed, classCount, imageCount];
-    if (elapsed >= kLightweightWarmupSeconds) {
+    self.button.accessibilityValue = [NSString stringWithFormat:@"LIGHTWEIGHT WARM-UP; %.0f seconds; class count %d; image count %u; stable checks %lu/%lu", elapsed, classCount, imageCount, (unsigned long)self.lightweightStableChecks, (unsigned long)kRequiredLightweightStableChecks];
+    if (self.lightweightMinimumReached && self.lightweightStableChecks >= kRequiredLightweightStableChecks) {
         self.lightweightWarmupActive = NO; self.lightweightWarmupStable = YES; [self.lightweightWarmupTimer invalidate]; self.lightweightWarmupTimer = nil; UIISetLastOperation(@"LIGHTWEIGHT_WARMUP_STABLE"); UIIWriteCrashRecoveryState(@"LIGHTWEIGHT_WARMUP", @"stable", nil, nil); AppendFileURL([ReportsDirectory() URLByAppendingPathComponent:@"WARMUP_SAMPLES.txt"], @"LIGHTWEIGHT_WARMUP_STABLE=YES\n"); self.button.accessibilityValue = @"LIGHTWEIGHT WARM-UP stable; individual legacy collectors enabled";
     }
 }
