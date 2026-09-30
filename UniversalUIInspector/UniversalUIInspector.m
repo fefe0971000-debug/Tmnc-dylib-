@@ -9,12 +9,17 @@
 #import <errno.h>
 #import <sys/stat.h>
 #import <unistd.h>
+#import <mach/mach.h>
 #include <stdint.h>
 #include <limits.h>
 #include <math.h>
 #import "LegacyCollectors.h"
 
 static NSString * const kUIID = @"UniversalUIInspector";
+static const BOOL kDiagnosticStabilityBuild = YES;
+static const NSTimeInterval kPassiveStartupSeconds = 120.0;
+static const NSTimeInterval kLightweightWarmupSeconds = 120.0;
+static const NSTimeInterval kLightweightSampleInterval = 5.0;
 static const NSUInteger kFullCaptureMaxDepth = 256;
 static const NSUInteger kFullCaptureMaxNodes = 500000;
 static const NSUInteger kSnapshotMaxDepth = 256;
@@ -235,6 +240,30 @@ static void AppendFileURL(NSURL *url, NSString *line) {
     [handle closeFile];
 }
 
+static void UIISetLastOperation(NSString *operation) {
+    WriteTextURL([ReportsDirectory() URLByAppendingPathComponent:@"LAST_OPERATION.txt"], [NSString stringWithFormat:@"%@\ntimestamp=%@\n", operation ?: @"UNKNOWN", DateString([NSDate date])]);
+}
+
+static void UIIWriteCrashRecoveryState(NSString *phase, NSString *status, NSString *sessionID, NSURL *sessionDirectory) {
+    NSDictionary *state = @{ @"schemaVersion": @"stability-1.0", @"phase": phase ?: @"UNKNOWN", @"status": status ?: @"UNKNOWN", @"sessionID": sessionID ?: @"", @"timestamp": DateString([NSDate date]) };
+    NSString *suffix = [NSString stringWithFormat:@"CRASH_RECOVERY_STATE_%@.json", [NSUUID UUID].UUIDString];
+    WriteJSONURL([ReportsDirectory() URLByAppendingPathComponent:suffix], state);
+    if (sessionDirectory) WriteJSONURL([sessionDirectory URLByAppendingPathComponent:@"CRASH_RECOVERY_STATE.json"], state);
+}
+
+static void UIIWriteHeartbeat(NSString *phase) {
+    WriteTextURL([ReportsDirectory() URLByAppendingPathComponent:@"HEARTBEAT.txt"], [NSString stringWithFormat:@"%@\nphase=%@\n", DateString([NSDate date]), phase ?: @"UNKNOWN"]);
+}
+
+static void UIIRecordMemoryTelemetry(NSString *phase) {
+    mach_task_basic_info_data_t info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    kern_return_t result = task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count);
+    if (result == KERN_SUCCESS) {
+        AppendFileURL([ReportsDirectory() URLByAppendingPathComponent:@"MEMORY_LOG.txt"], [NSString stringWithFormat:@"%@ phase=%@ resident_mb=%.2f virtual_mb=%.2f\n", DateString([NSDate date]), phase ?: @"UNKNOWN", info.resident_size / 1048576.0, info.virtual_size / 1048576.0]);
+    }
+}
+
 static NSString *MemoryNote(void) {
     return [NSString stringWithFormat:@"mainThread=%@", NSThread.isMainThread ? @"YES" : @"NO"];
 }
@@ -315,11 +344,8 @@ static void SessionControllerSnapshot(UIViewController *controller, NSUInteger d
 @implementation SessionCapture
 + (instancetype)shared { static SessionCapture *instance; static dispatch_once_t once; dispatch_once(&once, ^{ instance = [self new]; }); return instance; }
 - (instancetype)init { if ((self = [super init])) _snapshots = [NSMutableArray array]; return self; }
-- (void)sceneChanged:(NSNotification *)note { if (!self.active || !self.hostWindow) return; dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (self.active) [self capture:self.hostWindow label:@"scene-activation" inspectorWindow:nil]; }); }
 - (void)start:(UIWindow *)host {
     self.hostWindow = host; self.sessionID = [NSUUID UUID].UUIDString; self.snapshots = [NSMutableArray array]; self.active = YES;
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sceneChanged:) name:UIApplicationDidBecomeActiveNotification object:nil];
-    [self capture:host label:@"session-start" inspectorWindow:nil];
 }
 - (void)capture:(UIWindow *)host label:(NSString *)label inspectorWindow:(UIWindow *)inspector {
     if (!NSThread.isMainThread || !host || !self.active) return;
@@ -339,7 +365,7 @@ static void SessionControllerSnapshot(UIViewController *controller, NSUInteger d
     if (last && [last[@"views"] isEqual:views] && [last[@"controllers"] isEqual:controllers] && [last[@"label"] isEqual:label]) return;
     [self.snapshots addObject:snapshot];
 }
-- (void)stop { self.active = NO; [[NSNotificationCenter defaultCenter] removeObserver:self name:UIApplicationDidBecomeActiveNotification object:nil]; }
+- (void)stop { self.active = NO; }
 - (NSURL *)stageSession:(UIWindow *)host error:(NSError **)error {
     if (NSThread.isMainThread && self.active) [self capture:host label:@"export" inspectorWindow:nil];
     NSURL *base = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:self.sessionID ?: [NSUUID UUID].UUIDString] isDirectory:YES];
@@ -392,11 +418,22 @@ static void SessionControllerSnapshot(UIViewController *controller, NSUInteger d
 @property(nonatomic) BOOL pendingExport;
 @property(nonatomic) NSTimeInterval preparationStarted;
 @property(nonatomic,strong) NSTimer *preparationTimer;
+@property(nonatomic) NSTimeInterval passiveStarted;
+@property(nonatomic) NSTimeInterval lightweightWarmupStarted;
+@property(nonatomic) BOOL passiveTestComplete;
+@property(nonatomic) BOOL lightweightWarmupActive;
+@property(nonatomic) BOOL lightweightWarmupStable;
+@property(nonatomic,strong) NSTimer *stabilityTimer;
+@property(nonatomic,strong) NSTimer *lightweightWarmupTimer;
 @property(nonatomic,strong) NSString *lastPhase;
 @property(nonatomic,strong) NSURL *sessionDirectory;
 @property(nonatomic,strong) NSString *sessionID;
 @property(nonatomic,strong) NSDate *sessionStartDate;
 @property(nonatomic,strong) NSDate *sessionEndDate;
+@property(nonatomic,strong) NSString *cachedBundleIdentifier;
+@property(nonatomic,strong) NSString *cachedAppVersion;
+@property(nonatomic,strong) NSString *cachedDeviceModel;
+@property(nonatomic,strong) NSString *cachedOSVersion;
 @property(nonatomic,strong) NSMutableDictionary *phaseStatuses;
 @property(nonatomic,strong) NSMutableArray *phasesCompleted;
 @property(nonatomic,strong) NSMutableArray *phasesFailed;
@@ -431,6 +468,14 @@ static void SessionControllerSnapshot(UIViewController *controller, NSUInteger d
 - (void)captureSnapshot;
 - (void)prepareFullCapture:(BOOL)exportAfter;
 - (void)showCaptureStatus;
+- (void)showDiagnosticStatus;
+- (void)startLightweightWarmup;
+- (void)stabilityTick;
+- (void)lightweightWarmupTick;
+- (void)manualDumpHierarchy;
+- (void)manualDumpControllers;
+- (void)manualDumpRuntimeDetails;
+- (void)manualDumpImages;
 - (void)cancelCurrentPhase;
 - (void)hideOverlayForSystemUI;
 - (void)restoreOverlayAfterSystemUI;
@@ -497,6 +542,7 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     self.sessionDirectory = [sessions URLByAppendingPathComponent:self.sessionID isDirectory:YES];
     for (NSString *folder in @[@"00_METADATA", @"01_RUNTIME", @"02_IMAGES", @"03_CONTROLLERS", @"04_VIEWS", @"05_SNAPSHOTS", @"06_DIAGNOSTICS", @"07_LOGS"]) [[NSFileManager defaultManager] createDirectoryAtURL:[self.sessionDirectory URLByAppendingPathComponent:folder isDirectory:YES] withIntermediateDirectories:YES attributes:nil error:nil];
     self.phaseStatuses = [NSMutableDictionary dictionary]; self.phasesCompleted = [NSMutableArray array]; self.phasesFailed = [NSMutableArray array]; self.phasesSkipped = [NSMutableArray array]; self.filesFailed = [NSMutableArray array]; self.warnings = [NSMutableArray array]; self.limitsReached = [NSMutableArray array]; self.caughtErrors = [NSMutableArray array]; self.zipStatus = @"pending";
+    self.cachedBundleIdentifier = UIIString(NSBundle.mainBundle.bundleIdentifier); self.cachedAppVersion = UIIString([NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]); self.cachedDeviceModel = UIIString(UIDevice.currentDevice.model); self.cachedOSVersion = UIIString(UIDevice.currentDevice.systemVersion);
     WriteTextURL([self sessionFile:@"SESSION_INFO.txt" folder:@"00_METADATA"], [NSString stringWithFormat:@"UniversalUIInspector runtime session\nsession_id=%@\ncreated=%@\nminimum_warmup_seconds=60\nlegacy_collectors=YES\nstatus=preparing\n", self.sessionID, DateString(self.sessionStartDate)]);
     WriteJSONURL([self sessionFile:@"SESSION_INFO.json" folder:@"00_METADATA"], @{ @"schemaVersion": @"2.0", @"sessionID": self.sessionID, @"createdAt": DateString(self.sessionStartDate), @"minimumWarmupSeconds": @60, @"legacyCollectors": @YES, @"status": @"preparing" });
     WriteTextURL([self sessionFile:@"APP_INFO.txt" folder:@"00_METADATA"], [NSString stringWithFormat:@"bundleIdentifier=%@\nversion=%@\nbuild=%@\nmainImage=%@\n", UIIString(NSBundle.mainBundle.bundleIdentifier), UIIString([NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]), UIIString([NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"]), UIICString(_dyld_get_image_name(0))]);
@@ -508,7 +554,7 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     AppendFileURL([ReportsDirectory() URLByAppendingPathComponent:@"SESSION_PHASE_LOG.txt"], [line stringByAppendingString:@"\n"]);
 }
 - (void)beginPhase:(NSString *)phase message:(NSString *)message {
-    self.lastPhase = phase; self.phaseStatuses[phase] = @"running"; self.collectionAlert.message = message;
+    self.lastPhase = phase; self.phaseStatuses[phase] = @"running"; self.collectionAlert.message = message; UIISetLastOperation([[phase uppercaseString] stringByAppendingString:@"_BEGIN"]); UIIWriteCrashRecoveryState(phase, @"running", self.sessionID, self.sessionDirectory); UIIRecordMemoryTelemetry([phase stringByAppendingString:@"_BEGIN"]);
     NSString *line = [NSString stringWithFormat:@"START timestamp=%@ phase=%@ progress=%@ %@", DateString([NSDate date]), phase, message ?: @"", MemoryNote()];
     [self appendPhaseLog:phase line:line]; [self updateSessionState];
 }
@@ -519,7 +565,7 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     else if (![self.phasesCompleted containsObject:phase]) [self.phasesCompleted addObject:phase];
     if (warning.length && ![self.warnings containsObject:warning]) [self.warnings addObject:warning];
     NSString *line = [NSString stringWithFormat:@"END timestamp=%@ phase=%@ state=%@ count=%lu bytes=%lu warning=%@ error=%@ %@", DateString([NSDate date]), phase, finalState, (unsigned long)count, (unsigned long)bytes, warning ?: @"-", error ?: @"-", MemoryNote()];
-    [self appendPhaseLog:phase line:line]; [self updateSessionState];
+    [self appendPhaseLog:phase line:line]; UIISetLastOperation([[phase uppercaseString] stringByAppendingString:(error.length ? @"_FAILED" : @"_END")]); UIIRecordMemoryTelemetry([phase stringByAppendingString:(error.length ? @"_FAILED" : @"_END")]); UIIWriteCrashRecoveryState(phase, finalState, self.sessionID, self.sessionDirectory); [self updateSessionState];
 }
 - (void)mirrorReport:(NSString *)name from:(NSURL *)url {
     NSData *data = [NSData dataWithContentsOfURL:url]; if (data) [data writeToURL:[ReportsDirectory() URLByAppendingPathComponent:name] options:NSDataWritingAtomic error:nil];
@@ -528,43 +574,85 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
 - (void)start {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self start]; }); return; }
     if (self.started && self.window.superview) return;
-    UIWindowScene *scene = nil; NSString *evidence = nil; UIWindow *host = FindHostWindow(&scene, &evidence); [self.startup appendFormat:@"Discovery:\n%@", evidence ?: @"(none)" ];
+    UIWindowScene *scene = nil; NSString *evidence = nil; UIWindow *host = FindHostWindow(&scene, &evidence); [self.startup appendFormat:@"Discovery:\n%@\n", evidence ?: @"(none)" ];
     if (!host || !scene) { [self.startup appendString:@"ERROR: no foreground usable host window\n"]; [self writeStartupReports]; return; }
+    UIISetLastOperation(@"OVERLAY_CREATE_BEGIN");
     self.hostWindow = host; self.scene = scene; self.started = YES; self.root = [InspectorRootController new]; self.root.core = self; self.window = [[InspectorWindow alloc] initWithWindowScene:scene]; self.window.frame = scene.coordinateSpace.bounds; self.window.windowLevel = UIWindowLevelAlert + 1; self.window.backgroundColor = UIColor.clearColor; self.window.opaque = NO; self.window.rootViewController = self.root; self.button = [[InspectorButton alloc] initWithCore:self]; [self.root.view addSubview:self.button]; self.window.hidden = NO; [self.root viewDidLayoutSubviews];
-    [self.startup appendFormat:@"Host window: %p %@\nScene: %p state=%ld\nOverlay created: %p visible=%@ button=%@\n", host, UIIString(NSStringFromClass(host.class)), scene, (long)scene.activationState, self.window, self.window.hidden ? @"NO" : @"YES", self.button]; [self writeStartupReports];
+    UIISetLastOperation(@"OVERLAY_CREATE_END"); UIIWriteCrashRecoveryState(@"OVERLAY_CREATE", @"running", nil, nil);
+    [self.startup appendFormat:@"Host window: %p %@\nScene: %p state=%ld\nOverlay created: %p visible=%@ button=%@\nPASSIVE STARTUP TEST\nElapsed: 0\nNo polling, runtime enumeration, hooks, or dumps are active.\n", host, UIIString(NSStringFromClass(host.class)), scene, (long)scene.activationState, self.window, self.window.hidden ? @"NO" : @"YES", self.button]; [self writeStartupReports];
+    self.passiveStarted = CACurrentMediaTime(); self.passiveTestComplete = NO; self.stabilityTimer = [NSTimer scheduledTimerWithTimeInterval:5.0 target:self selector:@selector(stabilityTick) userInfo:nil repeats:YES]; [self stabilityTick];
 }
 - (void)writeStartupReports {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self writeStartupReports]; }); return; }
-    NSURL *treeURL = [ReportsDirectory() URLByAppendingPathComponent:@"STARTUP_VIEW_TREE.txt"]; BOOL truncated = NO; NSUInteger nodes = LegacyWriteVisibleHierarchy(self.hostWindow, treeURL, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated);
-    [self.startup appendFormat:@"Startup tree nodes: %lu max depth policy: %lu max nodes policy: %lu LIMIT_REACHED=%@\n", (unsigned long)nodes, (unsigned long)kFullCaptureMaxDepth, (unsigned long)kFullCaptureMaxNodes, truncated ? @"YES" : @"NO"];
-    NSString *boot = self.startup.copy; NSString *runtime = [NSString stringWithFormat:@"Runtime report %@\nloaded images: %u\nmain image: %s\ninspector window: %p\nhost window: %p\nstartup tree nodes: %lu\n", DateString([NSDate date]), _dyld_image_count(), _dyld_get_image_name(0) ?: "NOT_AVAILABLE", self.window, self.hostWindow, (unsigned long)nodes];
-    WriteReport(@"BOOT_DIAGNOSTICS.txt", boot); WriteReport(@"RUNTIME_STARTUP_REPORT.txt", runtime); if (truncated) WriteReport(@"STARTUP_WARNING.txt", @"LIMIT_REACHED in startup hierarchy; see SUMMARY and FINAL_LOG.\n");
+    WriteReport(@"STARTUP_VIEW_TREE.txt", @"PASSIVE STARTUP TEST\nNo UIKit hierarchy traversal was performed during startup.\nRuntime counters begin only after the user starts lightweight warm-up.\n");
+    WriteReport(@"BOOT_DIAGNOSTICS.txt", self.startup.copy);
+    WriteReport(@"RUNTIME_STARTUP_REPORT.txt", [NSString stringWithFormat:@"PASSIVE STARTUP TEST\ntimestamp=%@\ninspector window=%p\nhost window=%p\nclass/image counters=NOT_STARTED\n", DateString([NSDate date]), self.window, self.hostWindow]);
+}
+
+- (void)showDiagnosticStatus {
+    NSTimeInterval passiveElapsed = self.passiveStarted > 0 ? CACurrentMediaTime() - self.passiveStarted : 0;
+    NSTimeInterval warmupElapsed = self.lightweightWarmupStarted > 0 ? CACurrentMediaTime() - self.lightweightWarmupStarted : 0;
+    NSString *message = [NSString stringWithFormat:@"PASSIVE STARTUP TEST\nElapsed: %.1fs / %.0fs\nPassive stable: %@\n\nLIGHTWEIGHT WARM-UP\nElapsed: %.1fs / %.0fs\nActive: %@\nStable: %@\n\nNo automatic full capture is enabled in this diagnostic build.\nLAST_OPERATION.txt, HEARTBEAT.txt, MEMORY_LOG.txt, and WARMUP_SAMPLES.txt are written under %@.", passiveElapsed, kPassiveStartupSeconds, self.passiveTestComplete ? @"YES" : @"NO", warmupElapsed, kLightweightWarmupSeconds, self.lightweightWarmupActive ? @"YES" : @"NO", self.lightweightWarmupStable ? @"YES" : @"NO", ReportsDirectory().path];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Stability Diagnostic" message:message preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]]; [[self presenter] presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)stabilityTick {
+    if (!self.started || self.passiveTestComplete) return;
+    NSTimeInterval elapsed = CACurrentMediaTime() - self.passiveStarted;
+    self.button.accessibilityValue = [NSString stringWithFormat:@"PASSIVE STARTUP TEST; elapsed %.0f seconds; no polling or dump", elapsed];
+    UIISetLastOperation(@"PASSIVE_WAIT"); UIIWriteHeartbeat(@"PASSIVE_WAIT");
+    if (elapsed >= kPassiveStartupSeconds) {
+        self.passiveTestComplete = YES; [self.stabilityTimer invalidate]; self.stabilityTimer = nil; UIISetLastOperation(@"PASSIVE_WAIT"); UIIWriteCrashRecoveryState(@"PASSIVE_WAIT", @"stable", nil, nil); WriteReport(@"PASSIVE_STARTUP_TEST.txt", [NSString stringWithFormat:@"PASSIVE_STARTUP_TEST=STABLE\nelapsed_seconds=%.1f\nno_runtime_polling=YES\nno_automatic_dump=YES\n", elapsed]);
+        self.button.accessibilityValue = @"PASSIVE STARTUP TEST complete; start lightweight warm-up from the inspector menu";
+    }
+}
+
+- (void)startLightweightWarmup {
+    if (!self.passiveTestComplete) { [self showDiagnosticStatus]; return; }
+    if (self.lightweightWarmupActive || self.lightweightWarmupStable) return;
+    self.lightweightWarmupActive = YES; self.lightweightWarmupStarted = CACurrentMediaTime(); UIISetLastOperation(@"WARMUP_SAMPLE_BEGIN"); UIIWriteCrashRecoveryState(@"LIGHTWEIGHT_WARMUP", @"running", nil, nil); WriteTextURL([ReportsDirectory() URLByAppendingPathComponent:@"WARMUP_SAMPLES.txt"], @"LIGHTWEIGHT WARM-UP SAMPLES\nOnly objc_getClassList(NULL, 0) and _dyld_image_count() are collected.\n"); self.lightweightWarmupTimer = [NSTimer scheduledTimerWithTimeInterval:kLightweightSampleInterval target:self selector:@selector(lightweightWarmupTick) userInfo:nil repeats:YES]; [self lightweightWarmupTick];
+}
+
+- (void)lightweightWarmupTick {
+    if (!self.lightweightWarmupActive) return;
+    UIISetLastOperation(@"WARMUP_SAMPLE_BEGIN");
+    int classCount = objc_getClassList(NULL, 0);
+    UIISetLastOperation(@"WARMUP_CLASS_COUNT_END");
+    uint32_t imageCount = _dyld_image_count();
+    UIISetLastOperation(@"WARMUP_IMAGE_COUNT_END");
+    NSTimeInterval elapsed = CACurrentMediaTime() - self.lightweightWarmupStarted;
+    AppendFileURL([ReportsDirectory() URLByAppendingPathComponent:@"WARMUP_SAMPLES.txt"], [NSString stringWithFormat:@"timestamp=%@ elapsed=%.1f classCount=%d imageCount=%u\n", DateString([NSDate date]), elapsed, classCount, imageCount]);
+    UIIRecordMemoryTelemetry(@"LIGHTWEIGHT_WARMUP"); UIIWriteHeartbeat(@"LIGHTWEIGHT_WARMUP");
+    self.button.accessibilityValue = [NSString stringWithFormat:@"LIGHTWEIGHT WARM-UP; %.0f seconds; class count %d; image count %u", elapsed, classCount, imageCount];
+    if (elapsed >= kLightweightWarmupSeconds) {
+        self.lightweightWarmupActive = NO; self.lightweightWarmupStable = YES; [self.lightweightWarmupTimer invalidate]; self.lightweightWarmupTimer = nil; UIISetLastOperation(@"LIGHTWEIGHT_WARMUP_STABLE"); UIIWriteCrashRecoveryState(@"LIGHTWEIGHT_WARMUP", @"stable", nil, nil); AppendFileURL([ReportsDirectory() URLByAppendingPathComponent:@"WARMUP_SAMPLES.txt"], @"LIGHTWEIGHT_WARMUP_STABLE=YES\n"); self.button.accessibilityValue = @"LIGHTWEIGHT WARM-UP stable; individual legacy collectors enabled";
+    }
 }
 
 #pragma mark - Manual actions, backed by the same legacy collectors
 
 - (NSString *)hierarchy {
-    NSURL *url = [ReportsDirectory() URLByAppendingPathComponent:@"CURRENT_VIEW_HIERARCHY.txt"]; BOOL truncated = NO; LegacyWriteVisibleHierarchy(self.hostWindow, url, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated); return [NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil] ?: @"CURRENT_VIEW_HIERARCHY.txt\n";
+    UIISetLastOperation(@"VIEWS_BEGIN"); NSURL *url = [ReportsDirectory() URLByAppendingPathComponent:@"CURRENT_VIEW_HIERARCHY.txt"]; BOOL truncated = NO; LegacyWriteVisibleHierarchy(self.hostWindow, url, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated); return [NSString stringWithContentsOfURL:url encoding:NSUTF8StringEncoding error:nil] ?: @"CURRENT_VIEW_HIERARCHY.txt\n";
 }
 - (NSString *)controllers {
-    NSURL *controllersURL = [ReportsDirectory() URLByAppendingPathComponent:@"CURRENT_CONTROLLERS.txt"]; NSURL *treeURL = [ReportsDirectory() URLByAppendingPathComponent:@"CONTROLLER_TREE.txt"]; NSURL *mapURL = [ReportsDirectory() URLByAppendingPathComponent:@"CONTROLLER_VIEW_MAP.txt"]; BOOL truncated = NO; NSUInteger duplicates = 0, depth = 0; LegacyWriteControllers(self.hostWindow, controllersURL, treeURL, mapURL, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated, &duplicates, &depth); return [NSString stringWithContentsOfURL:controllersURL encoding:NSUTF8StringEncoding error:nil] ?: @"CURRENT_CONTROLLERS.txt\n";
+    UIISetLastOperation(@"CONTROLLERS_BEGIN"); NSURL *controllersURL = [ReportsDirectory() URLByAppendingPathComponent:@"CURRENT_CONTROLLERS.txt"]; NSURL *treeURL = [ReportsDirectory() URLByAppendingPathComponent:@"CONTROLLER_TREE.txt"]; NSURL *mapURL = [ReportsDirectory() URLByAppendingPathComponent:@"CONTROLLER_VIEW_MAP.txt"]; BOOL truncated = NO; NSUInteger duplicates = 0, depth = 0; LegacyWriteControllers(self.hostWindow, controllersURL, treeURL, mapURL, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated, &duplicates, &depth); return [NSString stringWithContentsOfURL:controllersURL encoding:NSUTF8StringEncoding error:nil] ?: @"CURRENT_CONTROLLERS.txt\n";
 }
 - (NSString *)classes {
-    NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES.jsonl"]; NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES.txt"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_SUMMARY.json"]; NSUInteger count = LegacyWriteRuntimeClassIndex(jsonl, text, summary); return [NSString stringWithFormat:@"RUNTIME_CLASSES.txt\ncomplete_index_count=%lu\njsonl=%@\n", (unsigned long)count, text.path];
+    UIISetLastOperation(@"LEGACY_CLASSES_BEGIN"); NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES.jsonl"]; NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES.txt"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_SUMMARY.json"]; NSUInteger count = LegacyWriteRuntimeClassIndex(jsonl, text, summary); return [NSString stringWithFormat:@"RUNTIME_CLASSES.txt\ncomplete_index_count=%lu\njsonl=%@\n", (unsigned long)count, text.path];
 }
 - (NSData *)detailedRuntimeJSON {
-    NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED.jsonl"]; NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED.txt"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED_SUMMARY.json"]; LegacyWriteRuntimeDetails(jsonl, text, summary); return [NSData dataWithContentsOfURL:summary] ?: [NSData data];
+    UIISetLastOperation(@"LEGACY_CLASSES_DETAIL_BEGIN"); NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED.jsonl"]; NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED.txt"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED_SUMMARY.json"]; LegacyWriteRuntimeDetails(jsonl, text, summary); return [NSData dataWithContentsOfURL:summary] ?: [NSData data];
 }
 - (NSString *)images {
-    NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES.txt"]; NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES.jsonl"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES_SUMMARY.json"]; LegacyWriteLoadedImages(text, jsonl, summary); return [NSString stringWithContentsOfURL:text encoding:NSUTF8StringEncoding error:nil] ?: @"LOADED_IMAGES.txt\n";
+    UIISetLastOperation(@"LEGACY_IMAGES_BEGIN"); NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES.txt"]; NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES.jsonl"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES_SUMMARY.json"]; LegacyWriteLoadedImages(text, jsonl, summary); return [NSString stringWithContentsOfURL:text encoding:NSUTF8StringEncoding error:nil] ?: @"LOADED_IMAGES.txt\n";
 }
 - (NSString *)diagnostics {
     return [NSString stringWithFormat:@"DIAGNOSTICS.txt\nmain thread=%@\nstarted=%@\nhost=%p\noverlay=%p hidden=%@\nreports=%@\nsession=%@\nlast phase=%@\n", NSThread.isMainThread ? @"YES" : @"NO", self.started ? @"YES" : @"NO", self.hostWindow, self.window, self.window.hidden ? @"YES" : @"NO", ReportsDirectory().path, self.sessionID ?: @"NOT_AVAILABLE", self.lastPhase ?: @"NOT_AVAILABLE"];
 }
-- (void)manualDumpHierarchy { NSURL *url = [ReportsDirectory() URLByAppendingPathComponent:@"CURRENT_VIEW_HIERARCHY.txt"]; BOOL truncated = NO; NSUInteger count = LegacyWriteVisibleHierarchy(self.hostWindow, url, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated); if (self.sessionDirectory) { NSData *data = [NSData dataWithContentsOfURL:url]; [data writeToURL:[self sessionFile:@"VIEW_TREE_LEGACY.txt" folder:@"04_VIEWS"] options:NSDataWritingAtomic error:nil]; } WriteReport(@"CURRENT_VIEW_HIERARCHY_STATUS.txt", [NSString stringWithFormat:@"nodes=%lu LIMIT_REACHED=%@\n", (unsigned long)count, truncated ? @"YES" : @"NO"]); }
-- (void)manualDumpControllers { NSURL *c = [ReportsDirectory() URLByAppendingPathComponent:@"CURRENT_CONTROLLERS.txt"]; NSURL *t = [ReportsDirectory() URLByAppendingPathComponent:@"CONTROLLER_TREE.txt"]; NSURL *m = [ReportsDirectory() URLByAppendingPathComponent:@"CONTROLLER_VIEW_MAP.txt"]; BOOL truncated = NO; NSUInteger duplicate = 0, depth = 0; LegacyWriteControllers(self.hostWindow, c, t, m, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated, &duplicate, &depth); }
-- (void)manualDumpRuntimeDetails { NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED.jsonl"]; NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED.txt"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED_SUMMARY.json"]; LegacyWriteRuntimeDetails(jsonl, text, summary); }
-- (void)manualDumpImages { NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES.txt"]; NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES.jsonl"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES_SUMMARY.json"]; LegacyWriteLoadedImages(text, jsonl, summary); }
+- (void)manualDumpHierarchy { UIISetLastOperation(@"VIEWS_BEGIN"); NSURL *url = [ReportsDirectory() URLByAppendingPathComponent:@"CURRENT_VIEW_HIERARCHY.txt"]; BOOL truncated = NO; NSUInteger count = LegacyWriteVisibleHierarchy(self.hostWindow, url, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated); if (self.sessionDirectory) { NSData *data = [NSData dataWithContentsOfURL:url]; [data writeToURL:[self sessionFile:@"VIEW_TREE_LEGACY.txt" folder:@"04_VIEWS"] options:NSDataWritingAtomic error:nil]; } WriteReport(@"CURRENT_VIEW_HIERARCHY_STATUS.txt", [NSString stringWithFormat:@"nodes=%lu LIMIT_REACHED=%@\n", (unsigned long)count, truncated ? @"YES" : @"NO"]); }
+- (void)manualDumpControllers { UIISetLastOperation(@"CONTROLLERS_BEGIN"); NSURL *c = [ReportsDirectory() URLByAppendingPathComponent:@"CURRENT_CONTROLLERS.txt"]; NSURL *t = [ReportsDirectory() URLByAppendingPathComponent:@"CONTROLLER_TREE.txt"]; NSURL *m = [ReportsDirectory() URLByAppendingPathComponent:@"CONTROLLER_VIEW_MAP.txt"]; BOOL truncated = NO; NSUInteger duplicate = 0, depth = 0; LegacyWriteControllers(self.hostWindow, c, t, m, kFullCaptureMaxDepth, kFullCaptureMaxNodes, &truncated, &duplicate, &depth); }
+- (void)manualDumpRuntimeDetails { UIISetLastOperation(@"LEGACY_CLASSES_BEGIN"); NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED.jsonl"]; NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED.txt"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"RUNTIME_CLASSES_DETAILED_SUMMARY.json"]; LegacyWriteRuntimeDetails(jsonl, text, summary); }
+- (void)manualDumpImages { UIISetLastOperation(@"LEGACY_IMAGES_BEGIN"); NSURL *text = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES.txt"]; NSURL *jsonl = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES.jsonl"]; NSURL *summary = [ReportsDirectory() URLByAppendingPathComponent:@"LOADED_IMAGES_SUMMARY.json"]; LegacyWriteLoadedImages(text, jsonl, summary); }
 
 #pragma mark - UI actions
 
@@ -573,20 +661,40 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
 - (void)showInspectorPanel {
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self showInspectorPanel]; }); return; }
     if (self.inspectorPanel.presentingViewController || self.collectionRunning) return;
-    self.inspectorPanel = [UIAlertController alertControllerWithTitle:@"Universal UI Inspector" message:@"Legacy collectors with safe sequential export. Navigate normally during the 60-second warm-up." preferredStyle:UIAlertControllerStyleActionSheet];
+    NSString *message = kDiagnosticStabilityBuild ? [NSString stringWithFormat:@"PASSIVE STARTUP TEST: %@\nLIGHTWEIGHT WARM-UP: %@\n\nNo automatic full capture is enabled in this diagnostic build.", self.passiveTestComplete ? @"STABLE" : @"RUNNING", self.lightweightWarmupStable ? @"STABLE" : (self.lightweightWarmupActive ? @"RUNNING" : @"NOT_STARTED")] : @"Legacy collectors with safe sequential export. Navigate normally during the 60-second warm-up.";
+    NSString *title = kDiagnosticStabilityBuild ? @"Stability Diagnostic" : @"Universal UI Inspector";
+    self.inspectorPanel = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleActionSheet];
     __weak typeof(self) weakSelf = self;
-    [self.inspectorPanel addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Target Class / Search"; field.text = weakSelf.selectedClassName ?: @""; }];
-    [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"PREPARE FULL CAPTURE" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf prepareFullCapture:NO]; }]];
-    [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"CAPTURE CURRENT SCREEN" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf captureSnapshot]; }]];
-    [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"EXPORT ALL RUNTIME" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf runOneButtonCollection]; }]];
-    [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"VIEW CAPTURE STATUS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf showCaptureStatus]; }]];
-    [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"CANCEL CURRENT PHASE" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) { [weakSelf cancelCurrentPhase]; }]];
-    [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"SEARCH CLASS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf searchClass:weakSelf.inspectorPanel.textFields.firstObject.text]; }]];
-    [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"EXPORT SELECTED CLASS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf exportSelectedClass]; }]];
+    if (kDiagnosticStabilityBuild) {
+        [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"VIEW STABILITY STATUS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf showDiagnosticStatus]; }]];
+        if (!self.passiveTestComplete) {
+            [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"PASSIVE TEST STILL RUNNING" style:UIAlertActionStyleDefault handler:nil]];
+        } else if (!self.lightweightWarmupStable) {
+            if (!self.lightweightWarmupActive) [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"START LIGHTWEIGHT WARM-UP" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf startLightweightWarmup]; }]];
+            [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"HEAVY COLLECTORS LOCKED UNTIL STABLE" style:UIAlertActionStyleDefault handler:nil]];
+        } else {
+            [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"CAPTURE CURRENT SCREEN" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf captureSnapshot]; }]];
+            [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"RUN LEGACY LOADED IMAGES" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf manualDumpImages]; }]];
+            [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"RUN LEGACY RUNTIME CLASSES" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf classes]; }]];
+            [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"RUN LEGACY CONTROLLERS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf manualDumpControllers]; }]];
+            [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"RUN LEGACY VIEWS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf manualDumpHierarchy]; }]];
+            [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"EXPORT ALL RUNTIME (DISABLED)" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) { [weakSelf runOneButtonCollection]; }]];
+        }
+    } else {
+        [self.inspectorPanel addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Target Class / Search"; field.text = weakSelf.selectedClassName ?: @""; }];
+        [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"PREPARE FULL CAPTURE" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf prepareFullCapture:NO]; }]];
+        [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"CAPTURE CURRENT SCREEN" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf captureSnapshot]; }]];
+        [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"EXPORT ALL RUNTIME" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf runOneButtonCollection]; }]];
+        [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"VIEW CAPTURE STATUS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf showCaptureStatus]; }]];
+        [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"CANCEL CURRENT PHASE" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action) { [weakSelf cancelCurrentPhase]; }]];
+        [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"SEARCH CLASS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf searchClass:weakSelf.inspectorPanel.textFields.firstObject.text]; }]];
+        [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"EXPORT SELECTED CLASS" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf exportSelectedClass]; }]];
+    }
     [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleCancel handler:nil]];
     UIPopoverPresentationController *popover = self.inspectorPanel.popoverPresentationController; popover.sourceView = self.button; popover.sourceRect = self.button.bounds; popover.permittedArrowDirections = UIPopoverArrowDirectionAny; [[self presenter] presentViewController:self.inspectorPanel animated:YES completion:nil];
 }
 - (void)showMenu {
+    if (kDiagnosticStabilityBuild) { [self showInspectorPanel]; return; }
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self showMenu]; }); return; }
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Universal UI Inspector" message:@"Read-only diagnostics" preferredStyle:UIAlertControllerStyleActionSheet]; __weak typeof(self) weakSelf = self;
     NSArray *items = @[ @[ @"Prepare Full Capture", ^{ [weakSelf prepareFullCapture:NO]; } ], @[ @"Capture Current Screen", ^{ [weakSelf captureSnapshot]; } ], @[ @"Stop Capture", ^{ [weakSelf cancelCurrentPhase]; } ], @[ @"Export Session", ^{ [weakSelf exportSession]; } ], @[ @"Choose Export Folder", ^{ [weakSelf chooseExportFolder]; } ], @[ @"Dump Visible Hierarchy", ^{ [weakSelf manualDumpHierarchy]; } ], @[ @"View Controllers", ^{ [weakSelf manualDumpControllers]; } ], @[ @"Runtime Classes (Detailed)", ^{ [weakSelf manualDumpRuntimeDetails]; } ], @[ @"Loaded Images", ^{ [weakSelf manualDumpImages]; } ], @[ @"Diagnostics", ^{ WriteReport(@"DIAGNOSTICS.txt", [weakSelf diagnostics]); } ] ];
@@ -602,10 +710,12 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     [result addAction:[UIAlertAction actionWithTitle:@"Close" style:UIAlertActionStyleCancel handler:nil]]; [[self presenter] presentViewController:result animated:YES completion:nil];
 }
 - (void)captureSnapshot {
-    if (!self.capturePrepared) { UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Preparation required" message:@"Run PREPARE FULL CAPTURE first; a minimum 60-second warm-up is required." preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"PREPARE FULL CAPTURE" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self prepareFullCapture:NO]; }]]; [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]]; [[self presenter] presentViewController:alert animated:YES completion:nil]; return; }
+    if (kDiagnosticStabilityBuild && !self.lightweightWarmupStable) { [self showDiagnosticStatus]; return; }
+    if (!kDiagnosticStabilityBuild && !self.capturePrepared) { UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Preparation required" message:@"Run PREPARE FULL CAPTURE first; a minimum 60-second warm-up is required." preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"PREPARE FULL CAPTURE" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self prepareFullCapture:NO]; }]]; [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]]; [[self presenter] presentViewController:alert animated:YES completion:nil]; return; }
     if (![SessionCapture shared].active) [SessionCapture shared].active = YES; NSTimeInterval started = CACurrentMediaTime(); [[SessionCapture shared] capture:self.hostWindow label:self.selectedClassName ?: [NSString stringWithFormat:@"screen-%@", DateString([NSDate date])] inspectorWindow:self.window]; self.lastPhase = @"snapshot"; [self appendPhaseLog:@"snapshot" line:[NSString stringWithFormat:@"END timestamp=%@ count=%lu elapsed_ms=%.1f", DateString([NSDate date]), (unsigned long)[SessionCapture shared].snapshots.count, (CACurrentMediaTime() - started) * 1000.0]]; UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Snapshot captured" message:[NSString stringWithFormat:@"Snapshots: %lu\nNavigate manually and capture again to accumulate screens.", (unsigned long)[SessionCapture shared].snapshots.count] preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]]; [[self presenter] presentViewController:alert animated:YES completion:nil];
 }
 - (void)prepareFullCapture:(BOOL)exportAfter {
+    if (kDiagnosticStabilityBuild) { [self showDiagnosticStatus]; return; }
     if (self.preparing || self.collectionRunning) return;
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self prepareFullCapture:exportAfter]; }); return; }
     self.preparing = YES; self.pendingExport = exportAfter; self.capturePrepared = NO; self.preparationStarted = CACurrentMediaTime(); self.lastPhase = @"warm-up"; [[SessionCapture shared] stop]; [self createSession];
@@ -617,14 +727,14 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     NSTimeInterval elapsed = CACurrentMediaTime() - self.preparationStarted; BOOL hostReady = self.hostWindow && self.hostWindow.rootViewController;
     self.collectionAlert.message = [NSString stringWithFormat:@"%02.0f:%02.0f / 01:00 — %@\nHost window/root: %@\nNavigate normally; no application navigation is forced.", floor(elapsed / 60.0), fmod(elapsed, 60.0), elapsed < 60.0 ? @"warming up" : @"warm-up complete", hostReady ? @"available" : @"waiting"];
     if (elapsed >= 60.0 && hostReady) {
-        [self.preparationTimer invalidate]; self.preparationTimer = nil; self.preparing = NO; self.capturePrepared = YES; [[SessionCapture shared] capture:self.hostWindow label:@"BASELINE" inspectorWindow:self.window]; self.phaseStatuses[@"warmup"] = @"complete"; WriteJSONURL([self sessionRootFile:@"SESSION_INFO.json"], @{ @"schemaVersion": @"2.0", @"sessionID": self.sessionID, @"createdAt": DateString(self.sessionStartDate), @"warmupElapsedSeconds": @(elapsed), @"minimumWarmupSeconds": @60, @"status": @"prepared", @"baselineSnapshot": @YES }); [self updateSessionState]; if (self.collectionAlert.presentingViewController) { [self.collectionAlert dismissViewControllerAnimated:YES completion:^{ if (self.pendingExport) { self.pendingExport = NO; [self runOneButtonCollection]; } }]; } else if (self.pendingExport) { self.pendingExport = NO; [self runOneButtonCollection]; }
+        [self.preparationTimer invalidate]; self.preparationTimer = nil; self.preparing = NO; self.capturePrepared = YES; self.phaseStatuses[@"warmup"] = @"complete"; WriteJSONURL([self sessionRootFile:@"SESSION_INFO.json"], @{ @"schemaVersion": @"2.0", @"sessionID": self.sessionID, @"createdAt": DateString(self.sessionStartDate), @"warmupElapsedSeconds": @(elapsed), @"minimumWarmupSeconds": @60, @"status": @"prepared", @"baselineSnapshot": @NO }); [self updateSessionState]; if (self.collectionAlert.presentingViewController) [self.collectionAlert dismissViewControllerAnimated:YES completion:nil]; self.pendingExport = NO;
     }
 }
 - (void)showCaptureStatus {
     NSString *message = [NSString stringWithFormat:@"prepared=%@\npreparing=%@\nsession=%@\nsnapshots=%lu\nlast phase=%@\nelapsed=%.1fs\npartial session is preserved at %@", self.capturePrepared ? @"YES" : @"NO", self.preparing ? @"YES" : @"NO", self.sessionID ?: @"NOT_AVAILABLE", (unsigned long)[SessionCapture shared].snapshots.count, self.lastPhase ?: @"NOT_AVAILABLE", self.preparationStarted > 0 ? CACurrentMediaTime() - self.preparationStarted : 0, self.sessionDirectory.path ?: @"NOT_AVAILABLE"]; UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Capture status" message:message preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]]; [[self presenter] presentViewController:alert animated:YES completion:nil];
 }
 - (void)cancelCurrentPhase {
-    self.collectionCancelled = YES; self.pendingExport = NO; [self.preparationTimer invalidate]; self.preparationTimer = nil; self.preparing = NO; self.lastPhase = @"cancelled"; [self appendPhaseLog:@"job" line:[NSString stringWithFormat:@"CANCEL timestamp=%@ phase=%@", DateString([NSDate date]), self.lastPhase]]; [self updateSessionState]; if (self.collectionAlert.presentingViewController) [self.collectionAlert dismissViewControllerAnimated:YES completion:nil];
+    self.collectionCancelled = YES; self.pendingExport = NO; [self.preparationTimer invalidate]; self.preparationTimer = nil; [self.stabilityTimer invalidate]; self.stabilityTimer = nil; [self.lightweightWarmupTimer invalidate]; self.lightweightWarmupTimer = nil; self.lightweightWarmupActive = NO; self.preparing = NO; self.lastPhase = @"cancelled"; UIISetLastOperation(@"CANCELLED"); UIIWriteCrashRecoveryState(@"CANCELLED", @"cancelled", self.sessionID, self.sessionDirectory); [self appendPhaseLog:@"job" line:[NSString stringWithFormat:@"CANCEL timestamp=%@ phase=%@", DateString([NSDate date]), self.lastPhase]]; [self updateSessionState]; if (self.collectionAlert.presentingViewController) [self.collectionAlert dismissViewControllerAnimated:YES completion:nil];
 }
 
 #pragma mark - Selected class/manual session export
@@ -653,8 +763,8 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
 }
 - (void)writeFinalLogs:(NSString *)overallStatus {
     self.sessionEndDate = [NSDate date]; NSArray *files = [self generatedFiles]; NSTimeInterval duration = self.sessionStartDate ? [self.sessionEndDate timeIntervalSinceDate:self.sessionStartDate] : 0;
-    NSDictionary *json = @{ @"schemaVersion": @"2.0", @"sessionID": self.sessionID ?: @"", @"startTime": DateString(self.sessionStartDate), @"endTime": DateString(self.sessionEndDate), @"durationSeconds": @(duration), @"appBundleIdentifier": UIIString(NSBundle.mainBundle.bundleIdentifier), @"appVersion": UIIString([NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]), @"device": UIIString(UIDevice.currentDevice.model), @"os": UIIString(UIDevice.currentDevice.systemVersion), @"runtimeClassCount": @(self.runtimeClassCount), @"protocolCount": @(self.protocolCount), @"loadedImageCount": @(self.loadedImageCount), @"windowCount": @(self.windowCount), @"controllerCount": @(self.controllerCount), @"viewCounts": @{ @"legacy": @(self.legacyViewCount), @"windows": @(self.windowViewCount), @"controllers": @(self.controllerViewCount), @"visibleController": @(self.visibleControllerViewCount) }, @"uniqueViewCount": @(self.uniqueViewCount), @"maximumDepthObserved": @(self.maximumDepthObserved), @"snapshotCount": @([SessionCapture shared].snapshots.count), @"filesGenerated": files ?: @[], @"filesFailed": self.filesFailed ?: @[], @"phasesCompleted": self.phasesCompleted ?: @[], @"phasesFailed": self.phasesFailed ?: @[], @"phasesSkipped": self.phasesSkipped ?: @[], @"limitsReached": self.limitsReached ?: @[], @"objectsSkipped": @(self.objectSkips), @"cycleDuplicateSkips": @(self.duplicateSkips), @"caughtErrorsExceptions": self.caughtErrors ?: @[], @"warnings": self.warnings ?: @[], @"timeouts": @[], @"zipStatus": self.zipStatus ?: @"pending", @"overallStatus": overallStatus ?: @"PARTIAL" };
-    NSMutableString *text = [NSMutableString stringWithFormat:@"FINAL_LOG.txt\noverall_status=%@\nsession_id=%@\nstart_time=%@\nend_time=%@\nduration_seconds=%.3f\napp_bundle_identifier=%@\napp_version=%@\ndevice=%@\nos=%@\nruntime_class_count=%lu\nprotocol_count=%lu\nloaded_image_count=%lu\nwindow_count=%lu\ncontroller_count=%lu\nlegacy_view_count=%lu\nwindow_view_count=%lu\ncontroller_view_count=%lu\nvisible_controller_view_count=%lu\nunique_view_count=%lu\nmaximum_depth_observed=%lu\nsnapshot_count=%lu\nzip_status=%@\nobjects_skipped=%lu\ncycle_duplicate_skips=%lu\n", overallStatus ?: @"PARTIAL", self.sessionID ?: @"", DateString(self.sessionStartDate), DateString(self.sessionEndDate), duration, UIIString(NSBundle.mainBundle.bundleIdentifier), UIIString([NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]), UIIString(UIDevice.currentDevice.model), UIIString(UIDevice.currentDevice.systemVersion), (unsigned long)self.runtimeClassCount, (unsigned long)self.protocolCount, (unsigned long)self.loadedImageCount, (unsigned long)self.windowCount, (unsigned long)self.controllerCount, (unsigned long)self.legacyViewCount, (unsigned long)self.windowViewCount, (unsigned long)self.controllerViewCount, (unsigned long)self.visibleControllerViewCount, (unsigned long)self.uniqueViewCount, (unsigned long)self.maximumDepthObserved, (unsigned long)[SessionCapture shared].snapshots.count, self.zipStatus ?: @"pending", (unsigned long)self.objectSkips, (unsigned long)self.duplicateSkips];
+    NSDictionary *json = @{ @"schemaVersion": @"2.0", @"sessionID": self.sessionID ?: @"", @"startTime": DateString(self.sessionStartDate), @"endTime": DateString(self.sessionEndDate), @"durationSeconds": @(duration), @"appBundleIdentifier": self.cachedBundleIdentifier ?: @"NOT_AVAILABLE", @"appVersion": self.cachedAppVersion ?: @"NOT_AVAILABLE", @"device": self.cachedDeviceModel ?: @"NOT_AVAILABLE", @"os": self.cachedOSVersion ?: @"NOT_AVAILABLE", @"runtimeClassCount": @(self.runtimeClassCount), @"protocolCount": @(self.protocolCount), @"loadedImageCount": @(self.loadedImageCount), @"windowCount": @(self.windowCount), @"controllerCount": @(self.controllerCount), @"viewCounts": @{ @"legacy": @(self.legacyViewCount), @"windows": @(self.windowViewCount), @"controllers": @(self.controllerViewCount), @"visibleController": @(self.visibleControllerViewCount) }, @"uniqueViewCount": @(self.uniqueViewCount), @"maximumDepthObserved": @(self.maximumDepthObserved), @"snapshotCount": @([SessionCapture shared].snapshots.count), @"filesGenerated": files ?: @[], @"filesFailed": self.filesFailed ?: @[], @"phasesCompleted": self.phasesCompleted ?: @[], @"phasesFailed": self.phasesFailed ?: @[], @"phasesSkipped": self.phasesSkipped ?: @[], @"limitsReached": self.limitsReached ?: @[], @"objectsSkipped": @(self.objectSkips), @"cycleDuplicateSkips": @(self.duplicateSkips), @"caughtErrorsExceptions": self.caughtErrors ?: @[], @"warnings": self.warnings ?: @[], @"timeouts": @[], @"zipStatus": self.zipStatus ?: @"pending", @"overallStatus": overallStatus ?: @"PARTIAL" };
+    NSMutableString *text = [NSMutableString stringWithFormat:@"FINAL_LOG.txt\noverall_status=%@\nsession_id=%@\nstart_time=%@\nend_time=%@\nduration_seconds=%.3f\napp_bundle_identifier=%@\napp_version=%@\ndevice=%@\nos=%@\nruntime_class_count=%lu\nprotocol_count=%lu\nloaded_image_count=%lu\nwindow_count=%lu\ncontroller_count=%lu\nlegacy_view_count=%lu\nwindow_view_count=%lu\ncontroller_view_count=%lu\nvisible_controller_view_count=%lu\nunique_view_count=%lu\nmaximum_depth_observed=%lu\nsnapshot_count=%lu\nzip_status=%@\nobjects_skipped=%lu\ncycle_duplicate_skips=%lu\n", overallStatus ?: @"PARTIAL", self.sessionID ?: @"", DateString(self.sessionStartDate), DateString(self.sessionEndDate), duration, self.cachedBundleIdentifier ?: @"NOT_AVAILABLE", self.cachedAppVersion ?: @"NOT_AVAILABLE", self.cachedDeviceModel ?: @"NOT_AVAILABLE", self.cachedOSVersion ?: @"NOT_AVAILABLE", (unsigned long)self.runtimeClassCount, (unsigned long)self.protocolCount, (unsigned long)self.loadedImageCount, (unsigned long)self.windowCount, (unsigned long)self.controllerCount, (unsigned long)self.legacyViewCount, (unsigned long)self.windowViewCount, (unsigned long)self.controllerViewCount, (unsigned long)self.visibleControllerViewCount, (unsigned long)self.uniqueViewCount, (unsigned long)self.maximumDepthObserved, (unsigned long)[SessionCapture shared].snapshots.count, self.zipStatus ?: @"pending", (unsigned long)self.objectSkips, (unsigned long)self.duplicateSkips];
     for (NSString *key in @[@"phasesCompleted", @"phasesFailed", @"phasesSkipped", @"limitsReached", @"filesFailed", @"warnings", @"caughtErrorsExceptions"]) [text appendFormat:@"%@=%@\n", key, [json[key] componentsJoinedByString:@" | "] ?: @"NONE"];
     [text appendFormat:@"files_generated=%@\n", [files componentsJoinedByString:@" | "] ?: @"NONE"];
     WriteTextURL([self sessionRootFile:@"FINAL_LOG.txt"], text); WriteJSONURL([self sessionRootFile:@"FINAL_LOG.json"], json); WriteReport(@"FINAL_LOG.txt", text); WriteJSONURL([ReportsDirectory() URLByAppendingPathComponent:@"FINAL_LOG.json"], json);
@@ -665,6 +775,7 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     if (self.limitsReached.count) [self.warnings addObject:@"One or more high configurable safety limits were reached; output is marked partial/suspicious."];
 }
 - (void)runOneButtonCollection {
+    if (kDiagnosticStabilityBuild) { UIISetLastOperation(@"AUTO_COORDINATOR_DISABLED"); UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Automatic capture disabled" message:@"This diagnostic build intentionally disables EXPORT ALL RUNTIME. Prove passive startup, lightweight counters, and each manual legacy collector first." preferredStyle:UIAlertControllerStyleAlert]; [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]]; [[self presenter] presentViewController:alert animated:YES completion:nil]; return; }
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self runOneButtonCollection]; }); return; }
     if (self.collectionRunning || self.preparing) return;
     if (!self.capturePrepared || !self.sessionDirectory) { [self prepareFullCapture:YES]; return; }
@@ -727,5 +838,5 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
 }
 @end
 
-static void UniversalUIInspectorInit(void) { dispatch_async(dispatch_get_main_queue(), ^{ InspectorCore *core = InspectorCore.shared; for (NSNumber *delay in @[@0.5, @1.0, @2.0, @4.0]) dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ if (!core.started) [core start]; }); }); }
+static void UniversalUIInspectorInit(void) { dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ UIApplication *application = UIApplication.sharedApplication; if (application.applicationState == UIApplicationStateActive || application.applicationState == UIApplicationStateInactive) [InspectorCore.shared start]; }); }
 __attribute__((constructor)) static void UniversalUIInspectorConstructor(void) { UniversalUIInspectorInit(); }

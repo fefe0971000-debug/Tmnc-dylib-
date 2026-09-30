@@ -1,38 +1,46 @@
 # FEATURE_STATUS
 
-Verified against source and the clean GitHub Actions build at [run 36652095671](https://github.com/fefe0971000-debug/Tmnc-dylib-/actions/runs/36652095671), commit `6409bccb65ab15d62a5527c9c1e8b21bbe332c5e`.
+This revision is a **stability-first diagnostic build**. Compilation is verified, but runtime stability is intentionally not claimed until the exact device sequence in `RUNTIME_STABILITY_TEST_PLAN.md` passes.
+
+## Stability architecture
+
+- [PASS] Constructor reduced to one delayed main-queue initialization after host-app startup
+- [PASS] Overlay startup no longer performs a UIKit hierarchy traversal
+- [PASS] Session startup no longer captures a view/controller snapshot or screenshot automatically
+- [PASS] Automatic application-active capture observation removed from SessionCapture startup
+- [PASS] Passive startup test runs for 120 seconds with no polling, runtime enumeration, dump, hooks, screenshot, or object traversal
+- [PASS] Lightweight warm-up is user-started and runs for 120 seconds
+- [PASS] Lightweight polling collects only `objc_getClassList(NULL, 0)` and `_dyld_image_count()` every approximately 5 seconds
+- [PASS] Heavy controls are locked until lightweight warm-up is stable
+- [PASS] `EXPORT ALL RUNTIME` is disabled in this diagnostic build
+- [PASS] Atomic `LAST_OPERATION.txt` breadcrumbs added before startup waits, warm-up samples, and collectors
+- [PASS] Unique `CRASH_RECOVERY_STATE_*.json` files preserve prior crash evidence
+- [PASS] `HEARTBEAT.txt` is updated approximately every 5 seconds during passive and lightweight tests
+- [PASS] `MEMORY_LOG.txt` records safe process memory telemetry
+- [PASS] Phase start/end/failure breadcrumbs and recovery-state updates added
+- [PASS] Background final-log work uses main-thread-cached device metadata instead of UIKit reads
+
+## Legacy collector preservation
 
 - [PASS] Legacy source located/restored from repository history and behavioral reference inspected
-- [PASS] Legacy runtime collector restored as a streaming process-wide collector
-- [PASS] Large-scale runtime class enumeration: complete `objc_getClassList` index has no small class cap; actual target count remains device-dependent
-- [PASS] Legacy hierarchy collector restored with pointer cycle protection and high configurable safety bounds
-- [PASS] Manual Runtime Classes action retained and backed by legacy index/detail collectors
-- [PASS] Manual Loaded Images action retained and backed by the dyld collector
-- [PASS] Manual View Controllers action retained and backed by the legacy controller collector
-- [PASS] Manual Dump Visible Hierarchy action retained and backed by the legacy hierarchy collector
-- [PASS] Prepare Full Capture creates a unique session directory and initial metadata immediately
-- [PASS] Minimum 60-second non-blocking warm-up with status UI and no forced navigation
-- [PASS] Sequential phase coordinator: metadata, images, class index, protocols, detail pass, controllers, windows, views, diagnostics, summary, ZIP
-- [PASS] Progressive disk writes and per-phase logs; runtime classes/details are streamed in JSONL/text batches
-- [PARTIAL] Partial-session preservation/recovery: files and `SESSION_STATE.json` survive cancellation/failure; automatic resume UI is not implemented
-- [PASS] Independent legacy/window/controller-root/visible-controller view reports are generated
-- [PASS] EXPORT ALL RUNTIME is an orchestrator over the same legacy collectors used by manual actions
-- [PASS] `FINAL_LOG.txt` generated for complete and partial sessions
-- [PASS] `FINAL_LOG.json` generated for complete and partial sessions
-- [PASS] Streaming ZIP export without the former 2 MiB-per-file/16 MiB aggregate truncation
-- [PASS] Native share-sheet path remains in the source
-- [PASS] iOS arm64 compilation completed on macOS 14 / Xcode 15.4 / iPhoneOS SDK 17.5
-- [PARTIAL] Physical-device injection, real Spotify runtime counts, screen navigation, share-sheet save, and crash/Jetsam behavior were not available in the sandbox
-- [PARTIAL] No final runtime dump sample could be produced without an injected iOS target; supplied pre-repair evidence is preserved under `SAMPLE_OUTPUT/`
+- [PASS] Legacy runtime class index remains complete and streamed without the former small class cap
+- [PASS] Legacy detailed runtime metadata remains a separate streamed collector
+- [PASS] Legacy loaded-images/dyld collector remains available
+- [PASS] Legacy protocol collector remains available
+- [PASS] Legacy controller collector remains available
+- [PASS] Legacy window and visible-hierarchy collectors remain available
+- [PASS] Independent controller-root and visible-controller hierarchy collectors remain available
+- [PASS] Manual collector functions remain in the source
+- [PASS] Automatic coordinator remains in the source but is disabled in this diagnostic build
+- [PASS] Runtime-generated `FINAL_LOG.txt` and `FINAL_LOG.json` remain implemented for later sessions
 
-## Build evidence
+## Verification boundary
 
-- Artifact: `UniversalUIInspector.dylib`
-- Architecture: Mach-O 64-bit arm64 dynamic library for iOS device
-- Deployment target: iOS 13.0
-- Clean build log: `BUILD_LOG.txt`
-- Mach-O header: `MACHO_HEADER.txt`
-- Dependencies: `LINKED_FRAMEWORKS.txt`
-- SHA-256: `67b0bd956ff064d00481f2c34897750fa94fd8aea28b5ea6cd849440eedd2f3b`
+- [PASS] iOS arm64 source compilation can be performed by the supplied macOS workflow
+- [NOT YET VERIFIED] Passive startup survival for 120+ seconds on a real target
+- [NOT YET VERIFIED] Lightweight counter warm-up survival for 120+ seconds on a real target
+- [NOT YET VERIFIED] Individual loaded-images, runtime-classes, controllers, and views device runs
+- [NOT YET VERIFIED] Inspector-only / HomeCustomization-only / coexistence matrix
+- [NOT YET VERIFIED] SpringBoard termination cause or crash log correlation
 
-The final binary was compiled from the implementation source. Documentation-only changes after the code build do not alter the binary; the final source commit is rebuilt by the same workflow before packaging.
+The sandbox has no injected iOS target, so no runtime-stability claim is made here. See `ROOT_CAUSE_ANALYSIS.md` and `RUNTIME_STABILITY_TEST_PLAN.md` for the exact next tests.
