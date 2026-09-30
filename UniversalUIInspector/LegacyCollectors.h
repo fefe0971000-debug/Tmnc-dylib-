@@ -42,4 +42,12 @@ NSUInteger LegacyWriteControllerViewHierarchy(UIWindow * _Nullable host,
                                               NSUInteger * _Nullable duplicateSkips,
                                               NSUInteger * _Nullable maxDepthObserved);
 
+NSUInteger LegacyWriteVisibleControllerHierarchy(UIWindow * _Nullable host,
+                                                  NSURL *url,
+                                                  NSUInteger maxDepth,
+                                                  NSUInteger maxNodes,
+                                                  BOOL * _Nullable truncated,
+                                                  NSUInteger * _Nullable duplicateSkips,
+                                                  NSUInteger * _Nullable maxDepthObserved);
+
 NS_ASSUME_NONNULL_END

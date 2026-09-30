@@ -758,3 +758,58 @@ NSUInteger LegacyWriteControllerViewHierarchy(UIWindow *host,
     if (truncated) *truncated = didTruncate;
     return viewNodes;
 }
+
+static UIViewController *LegacyVisibleController(UIViewController *root) {
+    UIViewController *current = root;
+    for (NSUInteger step = 0; current && step < 256; step++) {
+        UIViewController *next = current.presentedViewController;
+        if (!next && [current isKindOfClass:UINavigationController.class]) next = ((UINavigationController *)current).visibleViewController;
+        if (!next && [current isKindOfClass:UITabBarController.class]) next = ((UITabBarController *)current).selectedViewController;
+        if (!next && [current isKindOfClass:UISplitViewController.class]) {
+            for (UIViewController *candidate in [((UISplitViewController *)current).viewControllers reverseObjectEnumerator]) {
+                if (candidate.viewIfLoaded.window || candidate.isViewLoaded) { next = candidate; break; }
+            }
+        }
+        if (!next || next == current) break;
+        current = next;
+    }
+    return current;
+}
+
+NSUInteger LegacyWriteVisibleControllerHierarchy(UIWindow *host,
+                                                  NSURL *url,
+                                                  NSUInteger maxDepth,
+                                                  NSUInteger maxNodes,
+                                                  BOOL *truncated,
+                                                  NSUInteger *duplicateSkips,
+                                                  NSUInteger *maxDepthObserved) {
+    if (truncated) *truncated = NO;
+    if (duplicateSkips) *duplicateSkips = 0;
+    if (maxDepthObserved) *maxDepthObserved = 0;
+    if (!url) return 0;
+    FILE *file = fopen(url.path.UTF8String, "wb");
+    if (!file) return 0;
+    LegacyWriteLine(file, @"VIEW_TREE_VISIBLE_CONTROLLER.txt");
+    UIWindow *window = host ?: LegacyAllWindows(nil).firstObject;
+    UIViewController *controller = LegacyVisibleController(window.rootViewController);
+    BOOL didTruncate = NO;
+    NSUInteger nodes = 0;
+    if (controller) {
+        LegacyWriteLine(file, [NSString stringWithFormat:@"VISIBLE_CONTROLLER class=%@ pointer=%p viewLoaded=%@ view=%p",
+                               LegacyControllerClass(controller), controller, controller.isViewLoaded ? @"YES" : @"NO", controller.isViewLoaded ? controller.view : nil]);
+        if (controller.isViewLoaded && controller.view) {
+            LegacyWalkView(controller.view, 0, &nodes, maxDepth, maxNodes, [NSMutableSet set], file, &didTruncate, duplicateSkips, maxDepthObserved);
+        } else {
+            LegacyWriteLine(file, @"VISIBLE_CONTROLLER_VIEW NOT_AVAILABLE");
+        }
+    } else {
+        LegacyWriteLine(file, @"VISIBLE_CONTROLLER NOT_AVAILABLE");
+    }
+    LegacyWriteLine(file, [NSString stringWithFormat:@"SUMMARY nodes=%lu maxDepthObserved=%lu LIMIT_REACHED=%@ duplicateSkips=%lu",
+                           (unsigned long)nodes, (unsigned long)(maxDepthObserved ? *maxDepthObserved : 0),
+                           didTruncate ? @"YES" : @"NO", (unsigned long)(duplicateSkips ? *duplicateSkips : 0)]);
+    LegacyFlush(file);
+    fclose(file);
+    if (truncated) *truncated = didTruncate;
+    return nodes;
+}
