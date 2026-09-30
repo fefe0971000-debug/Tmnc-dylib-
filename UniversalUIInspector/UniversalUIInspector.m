@@ -574,8 +574,8 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     if (!NSThread.isMainThread) { dispatch_async(dispatch_get_main_queue(), ^{ [self showInspectorPanel]; }); return; }
     if (self.inspectorPanel.presentingViewController || self.collectionRunning) return;
     self.inspectorPanel = [UIAlertController alertControllerWithTitle:@"Universal UI Inspector" message:@"Legacy collectors with safe sequential export. Navigate normally during the 60-second warm-up." preferredStyle:UIAlertControllerStyleActionSheet];
-    [self.inspectorPanel addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Target Class / Search"; field.text = self.selectedClassName ?: @""; }];
     __weak typeof(self) weakSelf = self;
+    [self.inspectorPanel addTextFieldWithConfigurationHandler:^(UITextField *field) { field.placeholder = @"Target Class / Search"; field.text = weakSelf.selectedClassName ?: @""; }];
     [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"PREPARE FULL CAPTURE" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf prepareFullCapture:NO]; }]];
     [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"CAPTURE CURRENT SCREEN" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf captureSnapshot]; }]];
     [self.inspectorPanel addAction:[UIAlertAction actionWithTitle:@"EXPORT ALL RUNTIME" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [weakSelf runOneButtonCollection]; }]];
