@@ -59,9 +59,9 @@ static NSString *ReportPath(NSString *name) {
     return [[ReportsDirectory() URLByAppendingPathComponent:name] path];
 }
 static NSString *DateString(NSDate *date) {
-    static ISO8601DateFormatter *formatter;
+    static NSISO8601DateFormatter *formatter;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ formatter = [ISO8601DateFormatter new]; });
+    dispatch_once(&once, ^{ formatter = [NSISO8601DateFormatter new]; });
     return [formatter stringFromDate:date ?: [NSDate date]];
 }
 
@@ -183,17 +183,27 @@ static BOOL StreamZipDirectory(NSURL *directoryURL, NSURL *zipURL, NSUInteger *f
         @autoreleasepool {
             NSString *relative = [fileURL.path substringFromIndex:directoryURL.path.length + 1];
             NSData *name = [relative dataUsingEncoding:NSUTF8StringEncoding];
-            if (!name.length || name.length > UINT16_MAX) { success = NO; if (errorOut) *errorOut = @"ZIP entry name too long"; return; }
-            uint32_t crc = 0; uint64_t size64 = 0; NSString *streamError = nil;
-            if (!StreamFile(fileURL, nil, NO, &crc, &size64, &streamError) || size64 > UINT32_MAX || output.offsetInFile > UINT32_MAX) {
-                success = NO; if (errorOut) *errorOut = streamError ?: @"ZIP entry exceeds classic ZIP limits"; return;
+            if (!name.length || name.length > UINT16_MAX) {
+                success = NO;
+                if (errorOut) *errorOut = @"ZIP entry name too long";
+            } else {
+                uint32_t crc = 0; uint64_t size64 = 0; NSString *streamError = nil;
+                if (!StreamFile(fileURL, nil, NO, &crc, &size64, &streamError) || size64 > UINT32_MAX || output.offsetInFile > UINT32_MAX) {
+                    success = NO;
+                    if (errorOut) *errorOut = streamError ?: @"ZIP entry exceeds classic ZIP limits";
+                } else {
+                    uint32_t size = (uint32_t)size64;
+                    uint32_t offset = (uint32_t)output.offsetInFile;
+                    [output writeData:ZipLocalHeader(name, crc, size)];
+                    if (!StreamFile(fileURL, output, YES, NULL, NULL, &streamError)) {
+                        success = NO;
+                        if (errorOut) *errorOut = streamError ?: @"cannot write ZIP entry";
+                    } else {
+                        [central addObject:ZipCentralHeader(name, crc, size, offset)];
+                        if (fileCount) (*fileCount)++;
+                    }
+                }
             }
-            uint32_t size = (uint32_t)size64;
-            uint32_t offset = (uint32_t)output.offsetInFile;
-            [output writeData:ZipLocalHeader(name, crc, size)];
-            if (!StreamFile(fileURL, output, YES, NULL, NULL, &streamError)) { success = NO; if (errorOut) *errorOut = streamError ?: @"cannot write ZIP entry"; return; }
-            [central addObject:ZipCentralHeader(name, crc, size, offset)];
-            if (fileCount) (*fileCount)++;
         }
         if (!success) break;
     }
@@ -482,7 +492,7 @@ static UIWindow *FindHostWindow(UIWindowScene **sceneOut, NSString **evidenceOut
     [[SessionCapture shared] start:self.hostWindow];
     self.sessionID = [SessionCapture shared].sessionID ?: [NSUUID UUID].UUIDString;
     self.sessionStartDate = [NSDate date];
-    NSURL *sessions = [[ReportsDirectory() URLByAppendingPathComponent:@"Sessions" isDirectory:YES] URLByStandardizedURL];
+    NSURL *sessions = [ReportsDirectory() URLByAppendingPathComponent:@"Sessions" isDirectory:YES];
     [[NSFileManager defaultManager] createDirectoryAtURL:sessions withIntermediateDirectories:YES attributes:nil error:nil];
     self.sessionDirectory = [sessions URLByAppendingPathComponent:self.sessionID isDirectory:YES];
     for (NSString *folder in @[@"00_METADATA", @"01_RUNTIME", @"02_IMAGES", @"03_CONTROLLERS", @"04_VIEWS", @"05_SNAPSHOTS", @"06_DIAGNOSTICS", @"07_LOGS"]) [[NSFileManager defaultManager] createDirectoryAtURL:[self.sessionDirectory URLByAppendingPathComponent:folder isDirectory:YES] withIntermediateDirectories:YES attributes:nil error:nil];
